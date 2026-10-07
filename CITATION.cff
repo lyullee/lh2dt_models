@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 title: "lh2dt_models: First-principles liquid-hydrogen component and network models"
-version: 0.1.1
+version: 0.1.2
 message: "If you use lh2dt_models, please cite this software and the version used."
 type: software
 authors:

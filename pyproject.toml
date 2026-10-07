@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lh2dt_models"
-version = "0.1.1"
+version = "0.1.2"
 description = "First-principles liquid-hydrogen component, equipment, and network models"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,7 +35,7 @@ Documentation = "https://github.com/lyullee/lh2dt_models/tree/main/docs"
 Issues = "https://github.com/lyullee/lh2dt_models/issues"
 
 [project.optional-dependencies]
-data = ["openpyxl>=3.1"]
+data = ["openpyxl>=3.1", "PyYAML>=6.0"]
 dev = ["pytest>=8.0", "build>=1.2", "twine>=5.0"]
 
 [tool.setuptools.packages.find]

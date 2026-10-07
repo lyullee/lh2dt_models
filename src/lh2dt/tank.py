@@ -15,6 +15,7 @@ from typing import Callable, Iterable
 from .properties import HydrogenProperties, ThermoState
 from .streams import MassEnergyFlow
 from .geometry import HorizontalVesselGeometry
+from .adaptive import AdaptiveIntegrationError, AdaptiveStepDiagnostic, AdaptiveStepPolicy
 
 
 @dataclass(frozen=True)
@@ -179,8 +180,16 @@ class HomogeneousTank:
         ambient_temperature_K: float | Callable[[float], float],
         flow_callback: Callable[[float, ThermoState], Iterable[MassEnergyFlow]],
         wall_heat_callback: Callable[[float, ThermoState, float], float] | None = None,
+        adaptive_policy: AdaptiveStepPolicy | None = None,
     ) -> list[TankStepResult]:
-        """Advance with RK4 while keeping an independent boundary ledger."""
+        """Advance with RK4 while keeping an independent boundary ledger.
+
+        When ``adaptive_policy`` is supplied, the requested step is reduced
+        and retried if a trial state leaves the EOS domain or changes pressure
+        or temperature beyond the declared limits.  The policy only controls
+        numerical resolution; it never changes model parameters or consumes
+        observed values.
+        """
 
         if duration_s <= 0.0 or time_step_s <= 0.0:
             raise ValueError("duration_s and time_step_s must be positive")
@@ -212,20 +221,45 @@ class HomogeneousTank:
             return derivative, boundary_mass, boundary_energy
 
         time = 0.0
+        requested_step_s = float(time_step_s)
         while time < duration_s - 1e-12:
-            dt = min(time_step_s, duration_s - time)
-            k1, m1, e1 = evaluate(time, state)
-            k2_state = self._advance(state, k1, dt / 2.0)
-            k2, m2, e2 = evaluate(time + dt / 2.0, k2_state)
-            k3_state = self._advance(state, k2, dt / 2.0)
-            k3, m3, e3 = evaluate(time + dt / 2.0, k3_state)
-            k4_state = self._advance(state, k3, dt)
-            k4, m4, e4 = evaluate(time + dt, k4_state)
-            state = TankState(
-                state.hydrogen_mass_kg + dt * (k1.mass_kg_s + 2*k2.mass_kg_s + 2*k3.mass_kg_s + k4.mass_kg_s) / 6.0,
-                state.hydrogen_internal_energy_J + dt * (k1.internal_energy_W + 2*k2.internal_energy_W + 2*k3.internal_energy_W + k4.internal_energy_W) / 6.0,
-                state.wall_temperature_K + dt * (k1.wall_temperature_K_s + 2*k2.wall_temperature_K_s + 2*k3.wall_temperature_K_s + k4.wall_temperature_K_s) / 6.0,
-            )
+            if adaptive_policy is None:
+                dt = min(time_step_s, duration_s - time)
+            else:
+                dt = adaptive_policy.limit_to_event(time, requested_step_s, duration_s)
+            retries = 0
+            while True:
+                try:
+                    k1, m1, e1 = evaluate(time, state)
+                    k2_state = self._advance(state, k1, dt / 2.0)
+                    k2, m2, e2 = evaluate(time + dt / 2.0, k2_state)
+                    k3_state = self._advance(state, k2, dt / 2.0)
+                    k3, m3, e3 = evaluate(time + dt / 2.0, k3_state)
+                    k4_state = self._advance(state, k3, dt)
+                    k4, m4, e4 = evaluate(time + dt, k4_state)
+                    candidate = TankState(
+                        state.hydrogen_mass_kg + dt * (k1.mass_kg_s + 2*k2.mass_kg_s + 2*k3.mass_kg_s + k4.mass_kg_s) / 6.0,
+                        state.hydrogen_internal_energy_J + dt * (k1.internal_energy_W + 2*k2.internal_energy_W + 2*k3.internal_energy_W + k4.internal_energy_W) / 6.0,
+                        state.wall_temperature_K + dt * (k1.wall_temperature_K_s + 2*k2.wall_temperature_K_s + 2*k3.wall_temperature_K_s + k4.wall_temperature_K_s) / 6.0,
+                    )
+                    before_thermo = self.thermo(state)
+                    after_thermo = self.thermo(candidate)
+                    if adaptive_policy is None or adaptive_policy.accepts(before_thermo, after_thermo):
+                        break
+                    reason = "declared pressure or temperature change limit exceeded"
+                except (ValueError, RuntimeError, FloatingPointError) as exc:
+                    if adaptive_policy is None:
+                        raise
+                    reason = str(exc)
+                if adaptive_policy is None or dt <= adaptive_policy.minimum_step_s * (1.0 + 1.0e-12):
+                    raise AdaptiveIntegrationError(AdaptiveStepDiagnostic(
+                        time_s=time, attempted_step_s=dt,
+                        minimum_step_s=(adaptive_policy.minimum_step_s if adaptive_policy else dt),
+                        retries=retries, reason=reason,
+                    ))
+                dt = max(adaptive_policy.minimum_step_s, dt * adaptive_policy.shrink_factor)
+                retries += 1
+            state = candidate
             cumulative_mass += dt * (m1 + 2*m2 + 2*m3 + m4) / 6.0
             cumulative_energy += dt * (e1 + 2*e2 + 2*e3 + e4) / 6.0
             time += dt
@@ -241,4 +275,6 @@ class HomogeneousTank:
                 cumulative_boundary_energy_J=cumulative_energy,
                 total_energy_residual_J=current_total_energy - initial_total_energy - cumulative_energy,
             ))
+            if adaptive_policy is not None:
+                requested_step_s = adaptive_policy.next_step(dt, before_thermo, after_thermo)
         return results

@@ -35,6 +35,10 @@ without publishing the facility identity or raw telemetry.
 - [Inputs, outputs, and unit conventions](#inputs-outputs-and-unit-conventions)
 - [Dynamic simulation workflow](#dynamic-simulation-workflow)
 - [Instrumentation and HART observations](#instrumentation-and-hart-observations)
+- [Observation loading and blind validation](#observation-loading-and-blind-validation)
+- [Private asset input provenance](#private-asset-input-provenance)
+- [Adaptive integration](#adaptive-integration)
+- [Visual network authoring contract](#visual-network-authoring-contract)
 - [Validation and reproducibility](#validation-and-reproducibility)
 - [Choosing a model level](#choosing-a-model-level)
 - [Project layout](#project-layout)
@@ -79,6 +83,76 @@ The code is parameter driven. It does not silently fit field time series, infer 
 replace a missing unit conversion. Site data may be used to specify initial conditions, boundary
 conditions, or an independent validation case, while the physical model parameters remain visible
 and reviewable.
+
+## Observation loading and blind validation
+
+The `lh2dt.data_pipeline` adapter accepts a facility-owned CSV or historian export through explicit
+`ChannelSpec` declarations. It converts gauge pressure to absolute Pa, differential pressure to a
+separate Pa quantity, and Celsius to K. Missing values remain visible in a validity mask; no
+interpolation or sensor feedback is performed.
+
+```python
+from lh2dt import ChannelSpec, load_observation_csv, select_quiet_windows
+
+channels = [
+    ChannelSpec("PT", "tank_pressure", "pressure", "MPa", "gauge"),
+    ChannelSpec("DPT", "level_dpt", "differential_pressure", "mmH2O", "differential"),
+    ChannelSpec("TT", "tank_temperature", "temperature", "degC"),
+]
+table = load_observation_csv("private/export.csv", channels)
+windows = select_quiet_windows(
+    table, "tank_pressure", min_duration_s=6*3600,
+    max_duration_s=12*3600, min_pressure_span_Pa=10_000,
+)
+```
+
+`split_validation_window` reserves the first 30–60 minutes for a declared initial
+wall/vapor state and keeps the following 4–8 hours blind. `compare_forward_window`
+then applies the existing `compare_series` metric only to that blind interval. Sorting,
+duplicate resolution, quality flags, event boundaries, and the capacity denominator are
+all explicit in the input and result objects. See
+[`docs/실측_비교_파이프라인.md`](docs/실측_비교_파이프라인.md).
+
+## Private asset input provenance
+
+Facility-specific tank dimensions, insulation paths, connected dead volumes, valve boundaries,
+and instrument mappings belong in a private JSON/YAML file. The `asset_inputs` helpers require
+`privacy: "private"`, disable plant-data optimisation, and audit every supplied parameter for a
+unit, source, uncertainty, and asset applicability. The public package contains no TK-1101/TK-1102
+telemetry or site configuration. See [`docs/비공개_설비_입력_스키마.md`](docs/비공개_설비_입력_스키마.md).
+
+## Adaptive integration
+
+For long transients or sharp valve/phase-change events, pass an
+`AdaptiveStepPolicy` to `HomogeneousTank.simulate`. The policy can hit declared event times,
+retry a trial state at a smaller step when the EOS domain or pressure/temperature change limit
+is violated, and raise `AdaptiveIntegrationError` with the time, attempted step, retry count,
+and reason when the minimum step is exhausted. It changes numerical resolution only; it does
+not fit or alter physical parameters.
+
+```python
+from lh2dt import AdaptiveStepPolicy
+
+policy = AdaptiveStepPolicy(
+    minimum_step_s=0.5,
+    maximum_step_s=120.0,
+    event_times_s=(3600.0, 7200.0),
+)
+trace = tank.simulate(
+    initial, duration_s=12*3600, time_step_s=60,
+    ambient_temperature_K=293.15, flow_callback=boundary,
+    adaptive_policy=policy,
+)
+```
+
+## Visual network authoring contract
+
+`NetworkDraft` is the GUI-neutral representation for an Aspen/HYSYS-like editor. It stores
+component icons as nodes, typed ports, canvas positions, metadata, and pipe/valve links in JSON.
+`load_network_draft` and `save_network_draft` validate node and port references before a desktop
+or web editor hands the draft to a physical network builder. The draft is separate from the
+numerical solver, so a user can move, replace, duplicate, or resize a component without changing
+the model equations.
 
 ## Design principles
 
