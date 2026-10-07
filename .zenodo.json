@@ -1,6 +1,6 @@
 {
   "title": "lh2dt_models: First-principles liquid-hydrogen component and network models",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "upload_type": "software",
   "description": "First-principles liquid-hydrogen tank, thermal boundary, flow-path, vaporizer, reliquefier, pump, compressor, network, measurement, and control models with explicit mass, energy, and momentum closure diagnostics.",
   "creators": [
