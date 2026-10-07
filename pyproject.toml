@@ -3,26 +3,43 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lh2dt"
+name = "lh2dt_models"
 version = "0.1.0"
-description = "First-principles liquid-hydrogen component and network models"
+description = "First-principles liquid-hydrogen component, equipment, and network models"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "LH2DT contributors" }]
+keywords = ["liquid hydrogen", "cryogenic", "digital twin", "thermodynamics", "process simulation"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering",
+]
 dependencies = [
   "CoolProp>=8.0",
   "numpy>=2.0",
   "scipy>=1.14",
 ]
 
+[project.urls]
+Homepage = "https://github.com/lyullee/lh2dt_models"
+Repository = "https://github.com/lyullee/lh2dt_models"
+Documentation = "https://github.com/lyullee/lh2dt_models/tree/main/docs"
+Issues = "https://github.com/lyullee/lh2dt_models/issues"
+
 [project.optional-dependencies]
 data = ["openpyxl>=3.1"]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "build>=1.2", "twine>=5.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 lh2dt = ["data/*.csv"]
-

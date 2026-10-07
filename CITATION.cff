@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+title: "lh2dt_models: First-principles liquid-hydrogen component and network models"
+version: 0.1.0
+message: "If you use lh2dt_models, please cite this software and the version used."
+type: software
+authors:
+  - family-names: "LH2DT"
+    given-names: "Contributors"
+license: MIT
+repository-code: "https://github.com/lyullee/lh2dt_models"
+url: "https://github.com/lyullee/lh2dt_models"
+keywords:
+  - liquid hydrogen
+  - cryogenic engineering
+  - digital twin
+  - thermodynamics
+  - process simulation

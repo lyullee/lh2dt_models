@@ -1,4 +1,7 @@
-# LH2DT: 제일원리 액화수소 공정 모델 라이브러리
+# lh2dt_models: 제일원리 액화수소 공정 모델 라이브러리
+
+`lh2dt_models`는 PyPI 배포 이름과 프로젝트 이름이다. Python 구현 모듈은 기존
+예제와의 호환성을 위해 `lh2dt`로 유지한다.
 
 LH2DT는 액화수소 저장·이송·기화·벤트 설비를 코드에서 조립할 수 있는
 물리기반 모델 라이브러리입니다. 저장탱크, 진공단열, 밸브, 배관, 기화기,
@@ -90,7 +93,13 @@ print(trace[-1].thermo.pressure_Pa, trace[-1].total_energy_residual_J)
 
 - [`docs/모델_사용_및_인터페이스.md`](docs/모델_사용_및_인터페이스.md): 코드 연결 계약과 예제
 - [`docs/물리모델_구조와_방정식.md`](docs/물리모델_구조와_방정식.md): 상태변수·보존식·열전달·상변화
+- [`docs/모델_상세_및_물리방정식.md`](docs/모델_상세_및_물리방정식.md): 한글 상세 모델 설명
+- [`docs/model_reference.md`](docs/model_reference.md): English model reference
+- [`docs/인터페이스_상세_및_연결가이드.md`](docs/인터페이스_상세_및_연결가이드.md): 한글 인터페이스 연결 가이드
+- [`docs/interface_reference.md`](docs/interface_reference.md): English interface reference
 - [`docs/검증과_재현성.md`](docs/검증과_재현성.md): 공개 기준시험, 잔차, 테스트 절차
+- [`docs/배포_및_인용_가이드.md`](docs/배포_및_인용_가이드.md): GitHub·DOI·PyPI 배포 가이드
+- [`docs/release_and_citation.md`](docs/release_and_citation.md): English release and citation guide
 - `examples/`: 탱크·네트워크·기화·재액화·NASA 공개 기준 예제
 - `tests/`: 센터 데이터에 의존하지 않는 모델 단위 테스트
 
@@ -109,4 +118,3 @@ print(trace[-1].thermo.pressure_Pa, trace[-1].total_energy_residual_J)
 압력범위·열경계·밸브 특성·상변화 상관식의 유효범위를 검토한 뒤 사용해야
 합니다. 정량 성능 평가는 동일한 시간축과 경계조건으로 별도 시험 데이터에
 대해 수행합니다.
-
