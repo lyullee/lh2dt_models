@@ -1,0 +1,28 @@
+{
+  "title": "lh2dt_models: First-principles liquid-hydrogen component and network models",
+  "version": "0.1.0",
+  "upload_type": "software",
+  "description": "First-principles liquid-hydrogen tank, thermal boundary, flow-path, vaporizer, reliquefier, pump, compressor, network, measurement, and control models with explicit mass, energy, and momentum closure diagnostics.",
+  "creators": [
+    {
+      "name": "LH2DT Contributors"
+    }
+  ],
+  "keywords": [
+    "liquid hydrogen",
+    "cryogenic engineering",
+    "digital twin",
+    "thermodynamics",
+    "process simulation"
+  ],
+  "license": "MIT",
+  "access_right": "open",
+  "language": "eng",
+  "related_identifiers": [
+    {
+      "identifier": "https://github.com/lyullee/lh2dt_models",
+      "relation": "isSupplementTo",
+      "resource_type": "software"
+    }
+  ]
+}
