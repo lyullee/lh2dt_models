@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lh2dt"
+version = "0.1.0"
+description = "First-principles liquid-hydrogen component and network models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "LH2DT contributors" }]
+dependencies = [
+  "CoolProp>=8.0",
+  "numpy>=2.0",
+  "scipy>=1.14",
+]
+
+[project.optional-dependencies]
+data = ["openpyxl>=3.1"]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lh2dt = ["data/*.csv"]
+

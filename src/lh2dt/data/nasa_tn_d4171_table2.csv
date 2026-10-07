@@ -1,0 +1,18 @@
+test_number,heating_mode,average_fill_percent,direct_wetted_wall_energy_percent,total_liquid_energy_percent,vapor_energy_percent,evaporation_energy_percent,liquid_bulk_energy_percent,liquid_layer_energy_percent,source
+1,uniform,35.8,46.4,77.4,8.8,13.8,32.5,44.9,NASA TN D-4171 Table II
+2,uniform,52.9,57.2,83.0,6.7,10.3,51.7,31.3,NASA TN D-4171 Table II
+3,uniform,36.7,54.9,76.1,18.1,5.8,39.1,37.0,NASA TN D-4171 Table II
+4,uniform,50.4,62.7,79.4,15.4,5.2,58.4,21.0,NASA TN D-4171 Table II
+5,uniform,78.2,77.5,91.1,7.7,1.2,64.6,26.5,NASA TN D-4171 Table II
+6,uniform,38.4,59.2,74.4,22.0,3.6,47.8,26.6,NASA TN D-4171 Table II
+7,uniform,52.2,66.0,77.4,18.7,3.9,65.5,11.9,NASA TN D-4171 Table II
+8,uniform,78.7,77.1,90.7,8.7,0.6,63.8,26.9,NASA TN D-4171 Table II
+10,lower,52.8,94.4,85.4,3.5,11.1,82.6,2.8,NASA TN D-4171 Table II
+11,lower,79.4,98.2,97.0,0.9,2.1,95.6,1.4,NASA TN D-4171 Table II
+13,lower,50.9,98.1,84.6,3.6,11.8,80.9,3.7,NASA TN D-4171 Table II
+14,lower,79.9,98.8,96.8,0.9,2.3,96.8,0.0,NASA TN D-4171 Table II; liquid thermal layer printed as zero
+15,upper,36.9,4.1,70.9,9.7,19.4,5.6,65.3,NASA TN D-4171 Table II
+16,upper,50.7,6.6,70.8,8.4,20.8,6.2,64.6,NASA TN D-4171 Table II
+18,upper,34.6,4.5,67.6,14.6,17.8,8.0,59.6,NASA TN D-4171 Table II
+19,upper,51.2,8.6,66.2,12.4,21.4,5.4,60.8,NASA TN D-4171 Table II
+20,upper,47.7,4.4,59.3,18.9,21.8,4.8,54.5,NASA TN D-4171 Table II

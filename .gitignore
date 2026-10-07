@@ -1,0 +1,27 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+build/
+dist/
+
+# Local outputs and notebooks
+outputs/
+results/
+*.log
+*.xlsx
+*.csv
+*.json
+
+# Public NASA benchmark tables are part of the package data.
+!src/lh2dt/data/
+!src/lh2dt/data/*.csv
+
+# Field/site material is intentionally outside this repository.
+configs/
+inputs/
+photos/
+videos/
+visualization/
+authoring_ui/

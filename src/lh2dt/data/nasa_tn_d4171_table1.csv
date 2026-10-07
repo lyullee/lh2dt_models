@@ -1,0 +1,22 @@
+test_number,heating_mode,initial_fill_percent,pressure_rise_psi_min,liquid_deltaTbulk_over_deltaTsat,vapor_deltaTmax_R,average_heat_flux_Btu_hr_ft2,wetted_heat_flux_Btu_hr_ft2,dry_heat_flux_Btu_hr_ft2,source
+1,uniform,34.6,3.5,0.55,110,17.5,20.0,15.7,NASA TN D-4171 Table I
+2,uniform,51.4,3.6,0.46,,18.2,20.0,16.4,NASA TN D-4171 Table I; vapor deltaTmax illegible in scan
+3,uniform,34.9,11.3,0.62,212,59.9,80.3,45.8,NASA TN D-4171 Table I
+4,uniform,48.9,13.5,0.47,200,65.0,80.7,48.9,NASA TN D-4171 Table I
+5,uniform,76.5,17.0,0.32,159,72.6,80.5,54.1,NASA TN D-4171 Table I
+6,uniform,36.8,19.3,0.61,258,105.4,148.0,74.5,NASA TN D-4171 Table I
+7,uniform,50.7,23.6,0.47,245,111.6,142.7,78.4,NASA TN D-4171 Table I
+8,uniform,77.2,30.3,0.31,182,128.6,141.9,97.7,NASA TN D-4171 Table I
+9,lower,29.3,5.9,0.99,85,39.5,78.5,16.3,NASA TN D-4171 Table I
+10,lower,49.0,4.9,0.99,109,44.6,81.7,5.1,NASA TN D-4171 Table I
+11,lower,73.5,3.6,0.97,73,42.6,59.5,2.9,NASA TN D-4171 Table I
+12,lower,31.0,11.0,0.95,87,73.3,146.6,27.3,NASA TN D-4171 Table I
+13,lower,47.8,8.6,0.96,90,75.2,144.9,3.0,NASA TN D-4171 Table I
+14,lower,74.0,6.3,0.92,54,75.7,105.4,3.5,NASA TN D-4171 Table I
+15,upper,36.5,4.6,0.10,81,15.5,1.5,25.2,NASA TN D-4171 Table I
+16,upper,50.5,5.8,0.07,85,17.1,2.2,32.2,NASA TN D-4171 Table I
+17,upper,80.4,8.8,0.05,99,19.6,13.8,34.0,NASA TN D-4171 Table I
+18,upper,34.3,8.2,0.11,118,24.2,2.8,38.2,NASA TN D-4171 Table I
+19,upper,51.2,11.2,0.06,123,27.6,4.6,51.7,NASA TN D-4171 Table I
+20,upper,47.7,18.5,0.05,153,38.2,3.5,71.0,NASA TN D-4171 Table I
+21,upper,77.0,30.3,0.04,158,53.6,42.6,77.8,NASA TN D-4171 Table I
