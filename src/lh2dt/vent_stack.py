@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from collections.abc import Mapping
+from typing import Any
 
 from .pipe import HEMPipe
 from .properties import HydrogenProperties, ThermoState
@@ -210,6 +212,21 @@ class VentStack:
             upstream_side=upstream_side,
             pressure_drop_Pa=hydraulic.pressure_drop_Pa,
             momentum_residual_Pa=hydraulic.momentum_residual_Pa,
+        )
+
+    def export_accident_history(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Export a bounded gas vent history with an explicit upstream ledger."""
+        from .accident_export import export_fixed_source_accident_history
+
+        area = math.pi * self.diameter**2 / 4.0
+        return export_fixed_source_accident_history(
+            request,
+            properties=self.properties,
+            provider_model=f"{type(self).__module__}.{type(self).__qualname__}",
+            evaluate=lambda left, right, _opening: self.evaluate(left, right),
+            advance_opening=lambda _time_step_s: 1.0,
+            opening_area_m2=area,
+            area_provenance="native VentStack circular terminal area",
         )
 
 

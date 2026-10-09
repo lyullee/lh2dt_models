@@ -4,6 +4,7 @@ from lh2dt.dynamic_reliquefier import DynamicReliquefier
 from lh2dt.dynamic_vaporizer import DynamicVaporizer
 from lh2dt.properties import HydrogenProperties
 from lh2dt.valve import StrokeLimitedCommandedValve, Valve
+from lh2dt.vent_stack import VentStack
 
 
 def _request() -> dict[str, object]:
@@ -106,3 +107,24 @@ def test_stroke_limited_valve_rejects_missing_termination_ledger():
     request["available_mass_kg"] = 1.0
     with pytest.raises(ValueError, match="termination_basis"):
         valve.export_accident_history(request)
+
+
+def test_vent_stack_native_export_uses_fixed_native_area():
+    stack = VentStack(
+        length_m=0.1,
+        inner_diameter_m=1.0e-3,
+        roughness_m=1.0e-6,
+        ambient_temperature_K=288.15,
+        properties=HydrogenProperties(),
+    )
+    request = _request()
+    request.update({
+        "available_mass_kg": 1.0,
+        "termination_basis": "synthetic_diagnostic_horizon",
+        "termination_provenance": "caller-declared bounded vent diagnostic horizon",
+    })
+    result = stack.export_accident_history(request)
+    assert result["provider_model"] == "lh2dt.vent_stack.VentStack"
+    assert result["data"]["provider_meta"]["native_inventory_owner"] == "upstream_provider_declared"
+    assert len(result["data"]["steps"]) == 10
+    assert result["data"]["cumulative_mass_out_kg"] > 0.0
