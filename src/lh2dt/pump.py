@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Sequence
+from collections.abc import Mapping
+from typing import Any, Sequence
 
 from .properties import HydrogenProperties, ThermoState
 
@@ -614,3 +615,216 @@ class MappedPump:
             momentum_residual_Pa=map_head - required_rise,
             inlet_quality=left.quality,
         )
+
+    def export_accident_history(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Export a fixed-source liquid/two-phase pump outlet accident.
+
+        ``MappedPump`` is a performance map, not a finite-volume inventory
+        owner.  The request therefore must carry an explicit upstream mass
+        ledger and termination basis.  The H-Q-N operating point is evaluated
+        and echoed as provenance; the failed atmospheric opening is evaluated
+        by a separate native valve boundary so normal pump flow is never
+        silently promoted to an accident release.
+        """
+        if not isinstance(request, Mapping):
+            raise ValueError("accident export request must be a mapping")
+
+        def text(name: str) -> str:
+            value = request.get(name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+            return value.strip()
+
+        def number(name: str, default: float | None = None, *, positive: bool = True) -> float:
+            value = request.get(name, default)
+            if isinstance(value, bool) or value is None:
+                raise ValueError(f"{name} must be numeric")
+            try:
+                result = float(value)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"{name} must be numeric") from error
+            valid = result > 0.0 if positive else result >= 0.0
+            if not math.isfinite(result) or not valid:
+                comparator = "positive" if positive else "non-negative"
+                raise ValueError(f"{name} must be finite and {comparator}")
+            return result
+
+        def vector(name: str, default: tuple[float, float, float]) -> list[float]:
+            value = request.get(name, default)
+            if not isinstance(value, (tuple, list)) or len(value) != 3:
+                raise ValueError(f"{name} must contain three coordinates")
+            result: list[float] = []
+            for index, item in enumerate(value):
+                if isinstance(item, bool):
+                    raise ValueError(f"{name}[{index}] must be numeric")
+                try:
+                    coordinate = float(item)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(f"{name}[{index}] must be numeric") from error
+                if not math.isfinite(coordinate):
+                    raise ValueError(f"{name}[{index}] must be finite")
+                result.append(coordinate)
+            if math.isclose(sum(item * item for item in result), 0.0, abs_tol=1.0e-20):
+                raise ValueError(f"{name} must not be the zero vector")
+            return result
+
+        event_id = text("event_id")
+        component_id = text("component_id")
+        port_id = text("port_id")
+        source_pressure = number(
+            "source_pressure_pa_abs", request.get("initial_pressure_pa_abs")
+        )
+        source_temperature = number(
+            "source_temperature_k", request.get("initial_temperature_k")
+        )
+        ambient_pressure = number("ambient_pressure_pa_abs", 101325.0)
+        ambient_temperature = number("ambient_temperature_k", 288.15)
+        opening_diameter = number("failure_opening_diameter_m")
+        horizon = number("horizon_s")
+        time_step = number("time_step_s", min(0.05, horizon))
+        available_mass = number("available_mass_kg")
+        termination_basis = text("termination_basis")
+        termination_provenance = text("termination_provenance")
+        droplet_diameter = number("droplet_diameter_m", 1.0e-3)
+        flight_time = number("droplet_flight_time_s", 0.0, positive=False)
+        impact_position = vector("impact_position_m", (0.0, 0.0, 0.001))
+        if source_pressure <= ambient_pressure:
+            raise ValueError("source pressure must exceed ambient pressure for an outward accident")
+        source = self.properties.from_pT(source_pressure, source_temperature)
+        phase = str(source.phase).strip().lower()
+        if not ("liquid" in phase and "gas" not in phase) or (
+            source.quality is not None and source.quality > self.inlet_quality_tolerance
+        ):
+            raise ValueError("MappedPump accident export requires a liquid source state")
+        ambient = self.properties.from_pT(ambient_pressure, ambient_temperature)
+        pump_pressure_rise = number("pump_pressure_rise_pa", 0.0, positive=False)
+        pump_discharge = self.properties.from_pT(
+            source_pressure + pump_pressure_rise,
+            source_temperature,
+        )
+        pump_point = self.evaluate(source, pump_discharge)
+        from .valve import Valve
+
+        area = math.pi * opening_diameter**2 / 4.0
+        discharge_coefficient = number("discharge_coefficient", 0.8)
+        if discharge_coefficient > 1.0:
+            raise ValueError("discharge_coefficient must not exceed one")
+        valve = Valve(
+            area,
+            discharge_coefficient,
+            properties=self.properties,
+            allow_reverse=False,
+        )
+        steps: list[dict[str, Any]] = []
+        cumulative_mass = 0.0
+        cumulative_enthalpy = 0.0
+        elapsed = 0.0
+        choked_count = 0
+        while elapsed < horizon - 1.0e-12:
+            dt = min(time_step, horizon - elapsed)
+            hydraulic = valve.evaluate(source, ambient)
+            mass_flow = float(hydraulic.mass_flow_kg_s)
+            if not math.isfinite(mass_flow) or mass_flow < 0.0:
+                raise ValueError("native pump accident outlet returned an invalid mass flow")
+            interval_mass = mass_flow * dt
+            if cumulative_mass + interval_mass > available_mass + 1.0e-12:
+                raise ValueError("pump accident history exceeds the upstream available mass")
+            enthalpy = float(hydraulic.outlet_specific_enthalpy_J_kg)
+            exit_state = self.properties.from_ph(ambient_pressure, enthalpy)
+            quality = exit_state.quality
+            if quality is None:
+                if exit_state.phase in {"gas", "supercritical_gas", "supercritical"}:
+                    quality = 1.0
+                elif "liquid" in exit_state.phase:
+                    quality = 0.0
+                else:
+                    raise ValueError("native pump accident outlet has an unsupported phase")
+            quality = min(1.0, max(0.0, float(quality)))
+            gas_flow = mass_flow * quality
+            ground_flow = mass_flow - gas_flow
+            gas_fields: dict[str, Any] = {}
+            if gas_flow > 1.0e-12:
+                gas_fields = {
+                    "gas_pressure_pa_abs": ambient_pressure,
+                    "gas_temperature_k": float(exit_state.temperature_K),
+                    "gas_density_kg_m3": float(exit_state.density_kg_m3),
+                    "gas_effective_area_m2": area,
+                    "gas_velocity_m_s": gas_flow / (exit_state.density_kg_m3 * area),
+                    "gas_velocity_origin": "mass_continuity_from_declared_area",
+                }
+            steps.append({
+                "time_s": elapsed,
+                "total_mass_flow_kg_s": mass_flow,
+                "gas_mass_flow_kg_s": gas_flow,
+                "ground_liquid_mass_flow_kg_s": ground_flow,
+                "airborne_liquid_mass_flow_kg_s": 0.0,
+                "specific_enthalpy_j_kg": enthalpy,
+                "droplet_class_outcomes": [{
+                    "ground_liquid_mass_flow_kg_s": ground_flow,
+                    "airborne_liquid_mass_flow_kg_s": 0.0,
+                    "flight_time_s": flight_time,
+                    "impact_position_m": impact_position,
+                    "droplet_diameter_m": droplet_diameter,
+                }],
+                **gas_fields,
+                "provider_source_state": {
+                    "source_pressure_pa_abs": source_pressure,
+                    "source_temperature_k": source_temperature,
+                    "source_specific_enthalpy_j_kg": float(source.specific_enthalpy_J_kg),
+                    "throat_pressure_pa_abs": float(hydraulic.throat_pressure_Pa),
+                    "throat_mass_flux_kg_m2_s": float(hydraulic.mass_flux_kg_m2_s),
+                    "choked": bool(hydraulic.choked),
+                },
+            })
+            if hydraulic.choked:
+                choked_count += 1
+            cumulative_mass += interval_mass
+            cumulative_enthalpy += interval_mass * enthalpy
+            elapsed += dt
+        phase_basis = "two_phase" if any(
+            step["gas_mass_flow_kg_s"] > 1.0e-12
+            and step["ground_liquid_mass_flow_kg_s"] > 1.0e-12
+            for step in steps
+        ) else "liquid"
+        return {
+            "provider_export_schema": "prism.external_accident_history.v1",
+            "provider_model": f"{type(self).__module__}.{type(self).__qualname__}",
+            "provider_source_digest": request.get("provider_source_digest"),
+            "provider_state_snapshot_digest": request.get("state_snapshot_digest"),
+            "data": {
+                "event_kind": "accidental_leak",
+                "event_id": event_id,
+                "component_id": component_id,
+                "port_id": port_id,
+                "duration_s": elapsed,
+                "available_mass_kg": available_mass,
+                "cumulative_mass_out_kg": cumulative_mass,
+                "cumulative_specific_enthalpy_out_j": cumulative_enthalpy,
+                "termination_basis": termination_basis,
+                "termination_provenance": termination_provenance,
+                "upstream_service": "LH2",
+                "fluid": "Hydrogen",
+                "phase_basis": phase_basis,
+                "reference_area_m2": area,
+                "reference_area_provenance": "explicit failed atmospheric pump opening area",
+                "droplet_partition_provenance": "native pump outlet flash at ambient pressure; ground liquid retained; airborne liquid set to zero",
+                "steps": steps,
+                "provider_meta": {
+                    "native_inventory_owner": "upstream_provider_declared",
+                    "pump_operating_point": {
+                        "mass_flow_kg_s": pump_point.mass_flow_kg_s,
+                        "pressure_rise_pa": pump_point.pressure_rise_Pa,
+                        "map_head_pressure_rise_pa": pump_point.map_head_pressure_rise_Pa,
+                        "map_limited": pump_point.map_limited,
+                        "momentum_residual_pa": pump_point.momentum_residual_Pa,
+                        "cavitation_margin_m": pump_point.cavitation_margin_m,
+                    },
+                    "time_step_s": time_step,
+                    "valve": {
+                        "area_m2": area,
+                        "discharge_coefficient": discharge_coefficient,
+                        "choked_intervals": choked_count,
+                    },
+                },
+            },
+        }
