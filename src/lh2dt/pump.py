@@ -767,14 +767,6 @@ class MappedPump:
                     "droplet_diameter_m": droplet_diameter,
                 }],
                 **gas_fields,
-                "provider_source_state": {
-                    "source_pressure_pa_abs": source_pressure,
-                    "source_temperature_k": source_temperature,
-                    "source_specific_enthalpy_j_kg": float(source.specific_enthalpy_J_kg),
-                    "throat_pressure_pa_abs": float(hydraulic.throat_pressure_Pa),
-                    "throat_mass_flux_kg_m2_s": float(hydraulic.mass_flux_kg_m2_s),
-                    "choked": bool(hydraulic.choked),
-                },
             })
             if hydraulic.choked:
                 choked_count += 1

@@ -2346,7 +2346,7 @@ class LayeredTank:
                     "gas_temperature_k": float(exit_state.temperature_K),
                     "gas_density_kg_m3": float(exit_state.density_kg_m3),
                     "gas_effective_area_m2": area,
-                    "gas_velocity_m_s": gas_flow / (exit_state.density_kg_m3 * area),
+                    "gas_velocity_m_s": gas_flow / dt / (exit_state.density_kg_m3 * area),
                     "gas_velocity_origin": "mass_continuity_from_declared_area",
                 }
             steps.append({
@@ -2358,15 +2358,6 @@ class LayeredTank:
                 "specific_enthalpy_j_kg": enthalpy,
                 "droplet_class_outcomes": [droplet],
                 **gas_fields,
-                "provider_source_state": {
-                    "source_pressure_pa_abs": float(result.thermo.liquid[liquid_cell_index].pressure_Pa),
-                    "source_temperature_k": float(result.thermo.liquid[liquid_cell_index].temperature_K),
-                    "source_specific_enthalpy_j_kg": float(result.thermo.liquid[liquid_cell_index].specific_enthalpy_J_kg),
-                    "throat_pressure_pa_abs": float(hydraulic.throat_pressure_Pa),
-                    "throat_mass_flux_kg_m2_s": float(hydraulic.mass_flux_kg_m2_s),
-                    "choked": bool(hydraulic.choked),
-                    "liquid_cell_index": liquid_cell_index,
-                },
             })
             if hydraulic.choked:
                 choked_count += 1
