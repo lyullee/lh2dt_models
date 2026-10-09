@@ -2,6 +2,8 @@ import pytest
 
 from lh2dt.dynamic_reliquefier import DynamicReliquefier
 from lh2dt.dynamic_vaporizer import DynamicVaporizer
+from lh2dt.properties import HydrogenProperties
+from lh2dt.valve import StrokeLimitedCommandedValve, Valve
 
 
 def _request() -> dict[str, object]:
@@ -71,3 +73,36 @@ def test_accident_export_requires_outward_pressure(model):
     request["ambient_pressure_pa_abs"] = request["source_pressure_pa_abs"]
     with pytest.raises(ValueError, match="exceed ambient pressure"):
         model.export_accident_history(request)
+
+
+def test_stroke_limited_valve_native_export_requires_upstream_ledger():
+    properties = HydrogenProperties()
+    valve = StrokeLimitedCommandedValve(
+        Valve(7.853981633974483e-7, 0.8, properties=properties, allow_reverse=False),
+        stroke_time_s=0.05,
+    )
+    valve.set_target_opening(1.0)
+    request = _request()
+    request.update({
+        "available_mass_kg": 1.0,
+        "termination_basis": "synthetic_diagnostic_horizon",
+        "termination_provenance": "caller-declared bounded valve diagnostic horizon",
+    })
+    result = valve.export_accident_history(request)
+    assert result["provider_export_schema"] == "prism.external_accident_history.v1"
+    assert result["data"]["provider_meta"]["native_inventory_owner"] == "upstream_provider_declared"
+    assert result["data"]["cumulative_mass_out_kg"] > 0.0
+    assert result["data"]["cumulative_mass_out_kg"] < result["data"]["available_mass_kg"]
+    assert len(result["data"]["steps"]) == 10
+
+
+def test_stroke_limited_valve_rejects_missing_termination_ledger():
+    properties = HydrogenProperties()
+    valve = StrokeLimitedCommandedValve(
+        Valve(7.853981633974483e-7, 0.8, properties=properties, allow_reverse=False),
+        stroke_time_s=0.05,
+    )
+    request = _request()
+    request["available_mass_kg"] = 1.0
+    with pytest.raises(ValueError, match="termination_basis"):
+        valve.export_accident_history(request)

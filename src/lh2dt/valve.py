@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from collections.abc import Mapping
+from typing import Any
 
 import numpy as np
 
@@ -241,7 +243,6 @@ class CommandedValve:
     def evaluate(self, left: ThermoState, right: ThermoState) -> ValveResult:
         return self.valve.evaluate(left, right, self._opening)
 
-
 class StrokeLimitedCommandedValve:
     """Commanded valve with an explicit finite stroke time.
 
@@ -339,6 +340,26 @@ class StrokeLimitedCommandedValve:
 
     def evaluate(self, left: ThermoState, right: ThermoState) -> ValveResult:
         return self.valve.evaluate(left, right, self._opening)
+
+    def export_accident_history(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Export a bounded gas outlet with an explicit upstream ledger.
+
+        The valve has no inventory state of its own.  ``available_mass_kg``
+        and the termination basis therefore must be supplied by the upstream
+        equipment model; this method never infers inventory depletion or
+        isolation from the actuator position.
+        """
+        from .accident_export import export_fixed_source_accident_history
+
+        return export_fixed_source_accident_history(
+            request,
+            properties=self.valve.properties,
+            provider_model=f"{type(self).__module__}.{type(self).__qualname__}",
+            evaluate=self.valve.evaluate,
+            advance_opening=self.advance,
+            opening_area_m2=self.valve.area,
+            area_provenance="native StrokeLimitedCommandedValve full-open bore scaled by stroke state",
+        )
 
 
 class PressureReliefValve:
