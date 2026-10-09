@@ -79,3 +79,21 @@ def test_native_export_rejects_zero_direction():
     with pytest.raises(ValueError, match="zero vector"):
         make_tank().export_accident_history(payload)
 
+
+def test_native_export_records_provider_owned_isolation_success():
+    payload = request()
+    payload.update({
+        "horizon_s": 0.1,
+        "time_step_s": 0.05,
+        "minimum_step_s": 0.0005,
+        "isolation_time_s": 0.05,
+        "post_isolation_observation_s": 0.01,
+    })
+    result = make_tank().export_accident_history(payload)
+    data = result["data"]
+
+    assert data["termination_basis"] == "reviewed_isolation_success"
+    assert data["provider_meta"]["isolation_success"] is True
+    assert data["steps"][0]["total_mass_flow_kg_s"] > 0.0
+    assert data["steps"][1]["total_mass_flow_kg_s"] == pytest.approx(0.0)
+    assert data["cumulative_mass_out_kg"] < data["available_mass_kg"]

@@ -2235,6 +2235,20 @@ class LayeredTank:
         )
         if minimum_step_s is not None and minimum_step_s > time_step:
             raise ValueError("minimum_step_s must not exceed time_step_s")
+        isolation_value = request.get("isolation_time_s")
+        isolation_time = None if isolation_value is None else number(
+            "isolation_time_s", positive=False
+        )
+        if isolation_time is not None and isolation_time > horizon:
+            raise ValueError("isolation_time_s must not exceed horizon_s")
+        post_isolation_delay = number(
+            "post_isolation_observation_s", 0.0, positive=False
+        )
+        effective_horizon = horizon if isolation_time is None else min(
+            horizon, isolation_time + post_isolation_delay
+        )
+        if effective_horizon <= 0.0:
+            raise ValueError("isolation horizon must leave a positive observation interval")
         liquid_cell_index_value = request.get(
             "liquid_cell_index", self.parameters.liquid_cell_count - 1
         )
@@ -2285,13 +2299,19 @@ class LayeredTank:
         choked_count = 0
         maximum_mass_residual = 0.0
 
-        while elapsed < horizon - 1.0e-12:
-            dt = min(time_step, horizon - elapsed)
+        while elapsed < effective_horizon - 1.0e-12:
+            dt = min(time_step, effective_horizon - elapsed)
             sampled: list[Any] = []
 
             def flow_callback(_time: float, thermo: LayeredThermoState):
                 upstream = thermo.liquid[liquid_cell_index]
-                hydraulic = valve.evaluate(upstream, ambient)
+                absolute_time = elapsed + _time
+                opening = (
+                    0.0
+                    if isolation_time is not None and absolute_time >= isolation_time
+                    else 1.0
+                )
+                hydraulic = valve.evaluate(upstream, ambient, opening=opening)
                 if not math.isfinite(hydraulic.mass_flow_kg_s) or hydraulic.mass_flow_kg_s < 0.0:
                     raise ValueError("native tank outlet returned an invalid outward mass flow")
                 if not sampled:
@@ -2372,10 +2392,23 @@ class LayeredTank:
 
         final_mass = self.total_mass_kg(state)
         depleted = final_mass <= max(initial_mass * 1.0e-9, 1.0e-12)
-        termination_basis = "inventory_depletion" if depleted else "synthetic_diagnostic_horizon"
+        isolation_success = (
+            isolation_time is not None
+            and elapsed >= effective_horizon - 1.0e-12
+            and effective_horizon >= isolation_time
+        )
+        termination_basis = (
+            "inventory_depletion"
+            if depleted
+            else "reviewed_isolation_success"
+            if isolation_success
+            else "synthetic_diagnostic_horizon"
+        )
         termination_provenance = (
             "LayeredTank finite-volume state reached the explicit positive inventory threshold"
             if depleted
+            else "LayeredTank native outlet closed at the caller-declared isolation time and remained closed through the observation delay"
+            if isolation_success
             else "LayeredTank finite-volume state stopped at the caller-declared bounded horizon; residual inventory retained"
         )
         phase_basis = "two_phase" if any(
@@ -2415,6 +2448,9 @@ class LayeredTank:
                     "initial_pressure_pa_abs": source_pressure,
                     "initial_liquid_volume_fraction": liquid_fraction,
                     "liquid_cell_index": liquid_cell_index,
+                    "isolation_time_s": isolation_time,
+                    "post_isolation_observation_s": post_isolation_delay,
+                    "isolation_success": isolation_success,
                     "time_step_s": time_step,
                     "valve": {
                         "area_m2": area,
