@@ -72,6 +72,13 @@ def test_native_pipe_export_rejects_opening_larger_than_pipe():
         make_pipe().export_accident_history(payload)
 
 
+def test_native_pipe_export_rejects_two_sided_rupture_without_coupled_release_set():
+    payload = request()
+    payload["failure_mode"] = "two_sided_rupture"
+    with pytest.raises(ValueError, match="two-sided rupture"):
+        make_pipe().export_accident_history(payload)
+
+
 def test_native_pipe_export_records_provider_owned_isolation_success():
     payload = request()
     payload.update({

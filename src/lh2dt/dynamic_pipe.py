@@ -331,8 +331,8 @@ class DynamicHEMPipe:
 
         A failed opening is an explicit accident boundary.  The pipe owns its
         finite fluid and wall state while the caller owns the opening,
-        atmospheric boundary and finite observation horizon.  This method is
-        The initial state may be a gas, saturated liquid, or explicit
+        atmospheric boundary and finite observation horizon.  The initial
+        state may be a gas, saturated liquid, or explicit
         homogeneous two-phase state.  Liquid/two-phase outlets are flashed at
         the declared atmospheric boundary and exported with ground-liquid and
         gas mass branches.  Airborne liquid remains zero until an independent
@@ -393,6 +393,11 @@ class DynamicHEMPipe:
         event_id = text("event_id")
         component_id = text("component_id")
         port_id = text("port_id")
+        if request.get("failure_mode") == "two_sided_rupture":
+            raise ValueError(
+                "DynamicHEMPipe single-outlet export cannot represent a two-sided rupture; "
+                "use a coupled two-exit release-set provider"
+            )
         source_pressure = number(
             "initial_pressure_pa_abs", request.get("source_pressure_pa_abs")
         )
