@@ -45,6 +45,21 @@ def test_native_pipe_export_closes_gas_inventory():
     assert data["provider_meta"]["residual_mass_kg"] == pytest.approx(0.0, abs=1.0e-12)
     assert all(step["mass_flow_kg_s"] >= 0.0 for step in data["steps"])
     assert all(step["provider_source_state"]["choked"] for step in data["steps"])
+    assert all(
+        all(
+            field in step["provider_source_state"]
+            for field in (
+                "source_specific_entropy_j_kgk",
+                "throat_pressure_pa_abs",
+                "throat_temperature_k",
+                "throat_density_kg_m3",
+                "throat_specific_enthalpy_j_kg",
+                "throat_mass_flux_kg_m2_s",
+                "provider_source_state_provenance",
+            )
+        )
+        for step in data["steps"]
+    )
 
 
 def test_native_pipe_export_resolves_explicit_two_phase_source():

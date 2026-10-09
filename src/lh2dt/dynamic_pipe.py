@@ -569,6 +569,16 @@ class DynamicHEMPipe:
                     gas_flow / (exit_state.density_kg_m3 * area)
                     if gas_flow > 0.0 else 0.0
                 )
+                # Preserve the native compressible source state when the
+                # pipe outlet is gas-like.  The valve solver already returns
+                # the native throat pressure and mass flux; reconstructing
+                # the throat with the provider's upstream entropy keeps the
+                # optional downstream plane handoff source-bound without
+                # making PRISM infer a near-field state.
+                throat_state = self.properties.from_ps(
+                    float(hydraulic.throat_pressure_Pa),
+                    float(fluid.specific_entropy_J_kgK),
+                )
                 step = {
                     "time_s": elapsed,
                     "mass_flow_kg_s": gas_flow,
@@ -585,9 +595,16 @@ class DynamicHEMPipe:
                         "source_temperature_k": float(fluid.temperature_K),
                         "source_density_kg_m3": float(fluid.density_kg_m3),
                         "source_specific_enthalpy_j_kg": float(fluid.specific_enthalpy_J_kg),
+                        "source_specific_entropy_j_kgk": float(fluid.specific_entropy_J_kgK),
                         "throat_pressure_pa_abs": float(hydraulic.throat_pressure_Pa),
+                        "throat_temperature_k": float(throat_state.temperature_K),
+                        "throat_density_kg_m3": float(throat_state.density_kg_m3),
+                        "throat_specific_enthalpy_j_kg": float(throat_state.specific_enthalpy_J_kg),
                         "throat_mass_flux_kg_m2_s": float(hydraulic.mass_flux_kg_m2_s),
                         "choked": bool(hydraulic.choked),
+                        "provider_source_state_provenance": (
+                            "native DynamicHEMPipe upstream entropy and hydraulic throat result"
+                        ),
                     },
                 }
             else:
