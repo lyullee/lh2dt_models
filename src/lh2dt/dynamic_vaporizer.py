@@ -19,7 +19,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Iterable, Sequence
+from collections.abc import Mapping
+from typing import Any, Iterable, Sequence
 
 from .properties import HydrogenProperties, ThermoState
 from .streams import MassEnergyFlow
@@ -365,6 +366,173 @@ class DynamicVaporizer:
             energy_balance_residual_W=energy_residual,
             wall_energy_balance_residual_W=wall_residual,
         )
+
+    def export_accident_history(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Export one explicit atmospheric outlet history for PRISM.
+
+        This is an accident boundary, not a normal ``evaluate``/``step``
+        snapshot.  The caller must provide the failed opening, source state,
+        ambient boundary and finite horizon.  A horizon that stops with
+        residual inventory is labelled ``synthetic_diagnostic_horizon`` so a
+        downstream QRA cannot mistake the bounded trace for a qualified
+        inventory-depletion history.
+        """
+        if not isinstance(request, Mapping):
+            raise ValueError("accident export request must be a mapping")
+
+        def text(name: str) -> str:
+            value = request.get(name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+            return value.strip()
+
+        def number(name: str, default: float | None = None, *, positive: bool = True) -> float:
+            value = request.get(name, default)
+            if isinstance(value, bool) or value is None:
+                raise ValueError(f"{name} must be numeric")
+            try:
+                result = float(value)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"{name} must be numeric") from error
+            if not math.isfinite(result) or (result <= 0.0 if positive else result < 0.0):
+                comparator = "positive" if positive else "non-negative"
+                raise ValueError(f"{name} must be finite and {comparator}")
+            return result
+
+        event_id = text("event_id")
+        component_id = text("component_id")
+        port_id = text("port_id")
+        source_pressure = number("source_pressure_pa_abs", request.get("upstream_pressure_pa_abs"))
+        source_temperature = number("source_temperature_k", request.get("upstream_temperature_k"))
+        ambient_pressure = number("ambient_pressure_pa_abs", 101325.0)
+        ambient_temperature = number("ambient_temperature_k", 288.15)
+        opening_diameter = number("failure_opening_diameter_m")
+        horizon = number("horizon_s")
+        time_step = number("time_step_s", min(0.05, horizon))
+        discharge_coefficient = number("discharge_coefficient", 0.8)
+        stroke_time = number("stroke_time_s", max(time_step, 0.05))
+        wall_temperature = number("wall_temperature_k", source_temperature)
+        if horizon < time_step:
+            time_step = horizon
+        if source_pressure <= ambient_pressure:
+            raise ValueError("source pressure must exceed ambient pressure for an outward accident")
+
+        inlet = self.properties.from_pT(source_pressure, source_temperature)
+        # CoolProp uses ``supercritical`` for states above both critical
+        # coordinates, while its low-pressure gas branch is exposed as
+        # ``supercritical_gas``.  Both are single-phase gas-like source
+        # states for this atmospheric outlet contract; liquid-like states
+        # remain rejected explicitly.
+        if inlet.phase not in {"gas", "supercritical_gas", "supercritical"}:
+            raise ValueError("DynamicVaporizer accident export requires a gas-like source state")
+        state = self.initialize(inlet, wall_temperature_K=wall_temperature)
+        initial_mass = float(state.mass_kg)
+        outlet = self.properties.from_pT(ambient_pressure, ambient_temperature)
+        from .valve import StrokeLimitedCommandedValve, Valve
+
+        area = math.pi * opening_diameter**2 / 4.0
+        valve = StrokeLimitedCommandedValve(
+            Valve(area, discharge_coefficient, properties=self.properties, allow_reverse=False),
+            stroke_time_s=stroke_time,
+            initial_opening=0.0,
+        )
+        valve.set_target_opening(1.0)
+        steps: list[dict[str, Any]] = []
+        cumulative_mass = 0.0
+        cumulative_enthalpy = 0.0
+        elapsed = 0.0
+        choked_count = 0
+        depleted = False
+        while elapsed < horizon - 1.0e-12:
+            dt = min(time_step, horizon - elapsed)
+            fluid = self.thermo(state)
+            opening = valve.advance(dt)
+            hydraulic = valve.evaluate(fluid, outlet)
+            mass_flow = float(hydraulic.mass_flow_kg_s)
+            if not math.isfinite(mass_flow) or mass_flow < 0.0:
+                raise ValueError("accident outlet returned an invalid outward mass flow")
+            exit_state = self.properties.from_ph(
+                ambient_pressure, float(hydraulic.outlet_specific_enthalpy_J_kg)
+            )
+            if exit_state.phase not in {"gas", "supercritical_gas", "supercritical"}:
+                raise ValueError("accident outlet is not gas-like at the declared ambient boundary")
+            effective_area = area * opening
+            enthalpy = float(hydraulic.outlet_specific_enthalpy_J_kg)
+            density = float(exit_state.density_kg_m3)
+            steps.append({
+                "time_s": elapsed,
+                "mass_flow_kg_s": mass_flow,
+                "pressure_pa_abs": ambient_pressure,
+                "specific_enthalpy_j_kg": enthalpy,
+                "temperature_k": float(exit_state.temperature_K),
+                "density_kg_m3": density,
+                "effective_area_m2": effective_area,
+                "velocity_m_s": (
+                    mass_flow / (density * effective_area)
+                    if mass_flow > 0.0 and effective_area > 0.0 else 0.0
+                ),
+                "area_provenance": "explicit atmospheric valve area scaled by stroke state",
+                "velocity_origin": "mass_continuity_from_declared_area",
+                "provider_source_state": {
+                    "source_pressure_pa_abs": float(fluid.pressure_Pa),
+                    "source_temperature_k": float(fluid.temperature_K),
+                    "source_density_kg_m3": float(fluid.density_kg_m3),
+                    "source_specific_enthalpy_j_kg": float(fluid.specific_enthalpy_J_kg),
+                    "throat_pressure_pa_abs": float(hydraulic.throat_pressure_Pa),
+                    "throat_mass_flux_kg_m2_s": float(hydraulic.mass_flux_kg_m2_s),
+                    "choked": bool(hydraulic.choked),
+                },
+            })
+            if hydraulic.choked:
+                choked_count += 1
+            result = self.step(state, inlet, 0.0, mass_flow, dt)
+            cumulative_mass += mass_flow * dt
+            cumulative_enthalpy += mass_flow * dt * enthalpy
+            state = result.state
+            elapsed += dt
+            if state.mass_kg <= max(initial_mass * 1.0e-9, 1.0e-12):
+                depleted = True
+                break
+
+        termination_basis = "inventory_depletion" if depleted else "synthetic_diagnostic_horizon"
+        termination_provenance = (
+            "DynamicVaporizer finite-volume mass state reached the explicit positive inventory threshold"
+            if depleted else
+            "DynamicVaporizer finite-volume state stopped at the caller-declared bounded horizon; residual inventory retained"
+        )
+        return {
+            "provider_export_schema": "prism.external_accident_history.v1",
+            "provider_model": f"{type(self).__module__}.{type(self).__qualname__}",
+            "provider_source_digest": request.get("provider_source_digest"),
+            "provider_state_snapshot_digest": request.get("state_snapshot_digest"),
+            "data": {
+                "event_kind": "accidental_leak",
+                "event_id": event_id,
+                "component_id": component_id,
+                "port_id": port_id,
+                "duration_s": elapsed,
+                "available_mass_kg": initial_mass,
+                "cumulative_mass_out_kg": cumulative_mass,
+                "cumulative_static_enthalpy_out_j": cumulative_enthalpy,
+                "termination_basis": termination_basis,
+                "termination_provenance": termination_provenance,
+                "fluid": "Hydrogen",
+                "steps": steps,
+                "provider_meta": {
+                    "initial_mass_kg": initial_mass,
+                    "final_mass_kg": float(state.mass_kg),
+                    "residual_mass_kg": initial_mass - cumulative_mass - float(state.mass_kg),
+                    "time_step_s": time_step,
+                    "valve": {
+                        "area_m2": area,
+                        "discharge_coefficient": discharge_coefficient,
+                        "stroke_time_s": stroke_time,
+                        "final_opening": valve.opening,
+                        "choked_intervals": choked_count,
+                    },
+                },
+            },
+        }
 
 
 @dataclass(frozen=True)

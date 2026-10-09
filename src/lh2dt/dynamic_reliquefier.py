@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Iterable, Sequence
+from collections.abc import Mapping
+from typing import Any, Iterable, Sequence
 
 from .dynamic_vaporizer import (
     DynamicVaporizer,
@@ -130,11 +131,16 @@ class DynamicReliquefier(DynamicVaporizer):
             maximum_heat_W=maximum_cooling_W,
             properties=properties,
         )
+
         # Expose semantic names while retaining the common implementation
         # attributes used by the dynamic network adapter.
         self.cold_side_temperature = self.ambient_temperature
         self.cold_side_UA = self.ambient_UA
         self.maximum_cooling = self.maximum_heat
+
+    def export_accident_history(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Use the same explicit finite-volume outlet contract as the vaporizer."""
+        return super().export_accident_history(request)
 
 
 class ParallelDynamicReliquefier:
