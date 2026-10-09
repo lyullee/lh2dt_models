@@ -16,7 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Iterable
+from collections.abc import Mapping
+from typing import Any, Iterable
 
 from .pipe import HEMPipe
 from .properties import HydrogenProperties, ThermoState
@@ -324,6 +325,224 @@ class DynamicHEMPipe:
             heat_from_wall_W=heat_from_wall,
             heat_from_ambient_W=heat_from_ambient,
         )
+
+    def export_accident_history(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Export a native finite-volume gas-pipe accidental outlet history.
+
+        A failed opening is an explicit accident boundary.  The pipe owns its
+        finite fluid and wall state while the caller owns the opening,
+        atmospheric boundary and finite observation horizon.  This method is
+        intentionally gas-only until a provider-resolved liquid/two-phase
+        pipe boundary is implemented; liquid inputs are rejected rather than
+        silently converted to a gas packet.
+        """
+        if not isinstance(request, Mapping):
+            raise ValueError("accident export request must be a mapping")
+
+        def text(name: str) -> str:
+            value = request.get(name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+            return value.strip()
+
+        def number(
+            name: str,
+            default: float | None = None,
+            *,
+            positive: bool = True,
+        ) -> float:
+            value = request.get(name, default)
+            if isinstance(value, bool) or value is None:
+                raise ValueError(f"{name} must be numeric")
+            try:
+                result = float(value)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"{name} must be numeric") from error
+            valid = result > 0.0 if positive else result >= 0.0
+            if not math.isfinite(result) or not valid:
+                comparator = "positive" if positive else "non-negative"
+                raise ValueError(f"{name} must be finite and {comparator}")
+            return result
+
+        def vector(name: str, default: tuple[float, float, float]) -> list[float]:
+            value = request.get(name, default)
+            if (
+                not isinstance(value, (tuple, list))
+                or len(value) != 3
+            ):
+                raise ValueError(f"{name} must contain three coordinates")
+            result: list[float] = []
+            for index, item in enumerate(value):
+                if isinstance(item, bool):
+                    raise ValueError(f"{name}[{index}] must be numeric")
+                try:
+                    coordinate = float(item)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(f"{name}[{index}] must be numeric") from error
+                if not math.isfinite(coordinate):
+                    raise ValueError(f"{name}[{index}] must be finite")
+                result.append(coordinate)
+            if math.isclose(sum(item * item for item in result), 0.0, abs_tol=1.0e-20):
+                raise ValueError(f"{name} must not be the zero vector")
+            norm = math.sqrt(sum(item * item for item in result))
+            return [item / norm for item in result]
+
+        event_id = text("event_id")
+        component_id = text("component_id")
+        port_id = text("port_id")
+        source_pressure = number(
+            "initial_pressure_pa_abs", request.get("source_pressure_pa_abs")
+        )
+        source_temperature = number("initial_temperature_k", request.get("source_temperature_k"))
+        ambient_pressure = number("ambient_pressure_pa_abs", 101325.0)
+        ambient_temperature = number("ambient_temperature_k", 288.15)
+        opening_diameter = number("failure_opening_diameter_m")
+        horizon = number("horizon_s")
+        time_step = number("time_step_s", min(0.05, horizon))
+        discharge_coefficient = number("discharge_coefficient", 0.8)
+        if discharge_coefficient > 1.0:
+            raise ValueError("discharge_coefficient must not exceed one")
+        wall_temperature = number("wall_temperature_k", source_temperature)
+        if source_pressure <= ambient_pressure:
+            raise ValueError("initial pressure must exceed ambient pressure for an outward accident")
+        area = math.pi * opening_diameter**2 / 4.0
+        if opening_diameter > self.diameter:
+            raise ValueError("failure opening diameter must not exceed pipe diameter")
+
+        source = self.properties.from_pT(source_pressure, source_temperature)
+        if source.phase not in {"gas", "supercritical_gas", "supercritical"}:
+            raise ValueError(
+                "DynamicHEMPipe accident export currently requires a gas-like source state"
+            )
+        ambient = self.properties.from_pT(ambient_pressure, ambient_temperature)
+        from .valve import Valve
+
+        valve = Valve(
+            area,
+            discharge_coefficient,
+            properties=self.properties,
+            allow_reverse=False,
+        )
+        state = self.initialize(source, wall_temperature_K=wall_temperature)
+        initial_mass = float(state.mass_kg)
+        steps: list[dict[str, Any]] = []
+        cumulative_mass = 0.0
+        cumulative_enthalpy = 0.0
+        elapsed = 0.0
+        choked_count = 0
+
+        def derivative_at(candidate: DynamicHEMPipeState) -> tuple[DynamicHEMPipeDerivative, Any, ThermoState]:
+            fluid = self.thermo(candidate)
+            hydraulic = valve.evaluate(fluid, ambient)
+            if not math.isfinite(hydraulic.mass_flow_kg_s) or hydraulic.mass_flow_kg_s < 0.0:
+                raise ValueError("native pipe outlet returned an invalid outward mass flow")
+            derivative = self.derivative_from_flows(
+                candidate,
+                (MassEnergyFlow(-hydraulic.mass_flow_kg_s, hydraulic.outlet_specific_enthalpy_J_kg, source="DynamicHEMPipe native accidental outlet"),),
+            )
+            return derivative, hydraulic, fluid
+
+        def combined(*derivatives: DynamicHEMPipeDerivative) -> DynamicHEMPipeDerivative:
+            weights = (1.0, 2.0, 2.0, 1.0)
+            total = sum(weights)
+            names = (
+                "mass_kg_s", "internal_energy_W", "wall_temperature_K_s",
+                "mass_flow_in_kg_s", "mass_flow_out_kg_s",
+                "inlet_enthalpy_flow_W", "outlet_enthalpy_flow_W",
+                "heat_from_wall_W", "heat_from_ambient_W",
+            )
+            values = {
+                name: sum(weight * float(getattr(item, name)) for weight, item in zip(weights, derivatives)) / total
+                for name in names
+            }
+            return DynamicHEMPipeDerivative(**values)
+
+        while elapsed < horizon - 1.0e-12:
+            dt = min(time_step, horizon - elapsed)
+            k1, hydraulic, fluid = derivative_at(state)
+            k2, _, _ = derivative_at(self._advance(state, k1, dt / 2.0))
+            k3, _, _ = derivative_at(self._advance(state, k2, dt / 2.0))
+            k4, _, _ = derivative_at(self._advance(state, k3, dt))
+            averaged = combined(k1, k2, k3, k4)
+            next_state = self._advance(state, averaged, dt)
+            mass_out = max(0.0, -averaged.mass_kg_s * dt)
+            enthalpy = float(hydraulic.outlet_specific_enthalpy_J_kg)
+            exit_state = self.properties.from_ph(ambient_pressure, enthalpy)
+            if exit_state.phase not in {"gas", "supercritical_gas", "supercritical"}:
+                raise ValueError("native pipe outlet is not gas-like at the atmospheric boundary")
+            gas_velocity = (
+                mass_out / dt / (exit_state.density_kg_m3 * area)
+                if mass_out > 0.0 else 0.0
+            )
+            steps.append({
+                "time_s": elapsed,
+                "mass_flow_kg_s": mass_out / dt,
+                "pressure_pa_abs": ambient_pressure,
+                "specific_enthalpy_j_kg": enthalpy,
+                "temperature_k": float(exit_state.temperature_K),
+                "density_kg_m3": float(exit_state.density_kg_m3),
+                "effective_area_m2": area,
+                "velocity_m_s": gas_velocity,
+                "area_provenance": "explicit failed pipe opening area",
+                "velocity_origin": "mass_continuity_from_declared_area",
+                "provider_source_state": {
+                    "source_pressure_pa_abs": float(fluid.pressure_Pa),
+                    "source_temperature_k": float(fluid.temperature_K),
+                    "source_density_kg_m3": float(fluid.density_kg_m3),
+                    "source_specific_enthalpy_j_kg": float(fluid.specific_enthalpy_J_kg),
+                    "throat_pressure_pa_abs": float(hydraulic.throat_pressure_Pa),
+                    "throat_mass_flux_kg_m2_s": float(hydraulic.mass_flux_kg_m2_s),
+                    "choked": bool(hydraulic.choked),
+                },
+            })
+            if hydraulic.choked:
+                choked_count += 1
+            cumulative_mass += mass_out
+            cumulative_enthalpy += mass_out * enthalpy
+            state = next_state
+            elapsed += dt
+            if state.mass_kg <= max(initial_mass * 1.0e-9, 1.0e-12):
+                break
+
+        depleted = state.mass_kg <= max(initial_mass * 1.0e-9, 1.0e-12)
+        termination_basis = "inventory_depletion" if depleted else "synthetic_diagnostic_horizon"
+        termination_provenance = (
+            "DynamicHEMPipe finite-volume mass state reached the explicit positive inventory threshold"
+            if depleted else
+            "DynamicHEMPipe finite-volume state stopped at the caller-declared bounded horizon; residual inventory retained"
+        )
+        return {
+            "provider_export_schema": "prism.external_accident_history.v1",
+            "provider_model": f"{type(self).__module__}.{type(self).__qualname__}",
+            "provider_source_digest": request.get("provider_source_digest"),
+            "provider_state_snapshot_digest": request.get("state_snapshot_digest"),
+            "data": {
+                "event_kind": "accidental_leak",
+                "event_id": event_id,
+                "component_id": component_id,
+                "port_id": port_id,
+                "duration_s": elapsed,
+                "available_mass_kg": initial_mass,
+                "cumulative_mass_out_kg": cumulative_mass,
+                "cumulative_static_enthalpy_out_j": cumulative_enthalpy,
+                "termination_basis": termination_basis,
+                "termination_provenance": termination_provenance,
+                "fluid": "Hydrogen",
+                "steps": steps,
+                "provider_meta": {
+                    "native_inventory_owner": "DynamicHEMPipe",
+                    "initial_mass_kg": initial_mass,
+                    "final_mass_kg": float(state.mass_kg),
+                    "residual_mass_kg": initial_mass - cumulative_mass - float(state.mass_kg),
+                    "time_step_s": time_step,
+                    "valve": {
+                        "area_m2": area,
+                        "discharge_coefficient": discharge_coefficient,
+                        "choked_intervals": choked_count,
+                    },
+                },
+            },
+        }
 
     def step(
         self,
