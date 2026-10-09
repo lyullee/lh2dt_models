@@ -1,3 +1,5 @@
+import math
+
 import pytest
 
 from lh2dt.dynamic_pipe import DynamicHEMPipe
@@ -117,6 +119,11 @@ def test_native_full_bore_export_terminates_at_pressure_equalization():
     data = result["data"]
     assert data["termination_basis"] == "model_pressure_equalization"
     assert data["provider_meta"]["pressure_equalized"] is True
-    assert data["provider_meta"]["final_pressure_pa_abs"] <= 101_325.0 * (1.0 + 1.0e-8)
+    assert math.isclose(
+        data["provider_meta"]["final_pressure_pa_abs"],
+        101_325.0,
+        rel_tol=0.0,
+        abs_tol=1.0e-3,
+    )
     assert data["duration_s"] < payload["horizon_s"]
     assert data["cumulative_mass_out_kg"] < data["available_mass_kg"]

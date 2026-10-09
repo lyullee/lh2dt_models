@@ -538,6 +538,25 @@ class DynamicHEMPipe:
             )
             averaged = combined(k1, k2, k3, k4)
             next_state = self._advance(state, averaged, dt)
+            next_fluid = self.thermo(next_state)
+            if next_fluid.pressure_Pa <= ambient_pressure:
+                # The finite-volume step can straddle the atmospheric
+                # boundary. Locate the pressure-equalisation point inside
+                # this RK4 interval instead of retaining a below-ambient
+                # terminal state caused by numerical overshoot.
+                lo = 0.0
+                hi = 1.0
+                for _ in range(40):
+                    mid = 0.5 * (lo + hi)
+                    trial = self._advance(state, averaged, dt * mid)
+                    if self.thermo(trial).pressure_Pa > ambient_pressure:
+                        lo = mid
+                    else:
+                        hi = mid
+                event_fraction = 0.5 * (lo + hi)
+                dt *= event_fraction
+                next_state = self._advance(state, averaged, dt)
+                pressure_equalized = True
             mass_out = max(0.0, -averaged.mass_kg_s * dt)
             enthalpy = float(hydraulic.outlet_specific_enthalpy_J_kg)
             exit_state = self.properties.from_ph(ambient_pressure, enthalpy)
@@ -614,6 +633,8 @@ class DynamicHEMPipe:
             cumulative_enthalpy += mass_out * enthalpy
             state = next_state
             elapsed += dt
+            if pressure_equalized:
+                break
             if state.mass_kg <= max(initial_mass * 1.0e-9, 1.0e-12):
                 break
 
