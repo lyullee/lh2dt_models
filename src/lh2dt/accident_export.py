@@ -100,6 +100,39 @@ def export_fixed_source_accident_history(
         enthalpy = float(getattr(hydraulic, "outlet_specific_enthalpy_J_kg"))
         effective_area = declared_area * opening
         density = float(exit_state.density_kg_m3)
+        # Preserve a throat only when the native outlet actually solved one.
+        # StrokeLimitedCommandedValve exposes this hydraulic result; the
+        # VentStack Darcy result does not, so it remains explicitly blocked
+        # from the optional compressible-plane adapter.
+        source_trace = {
+            "source_pressure_pa_abs": float(inlet.pressure_Pa),
+            "source_temperature_k": float(inlet.temperature_K),
+            "source_density_kg_m3": float(inlet.density_kg_m3),
+            "source_specific_enthalpy_j_kg": float(inlet.specific_enthalpy_J_kg),
+            "source_specific_entropy_j_kgk": float(inlet.specific_entropy_J_kgK),
+            "opening": opening,
+            "choked": bool(getattr(hydraulic, "choked", False)),
+        }
+        throat_pressure = getattr(hydraulic, "throat_pressure_Pa", None)
+        if throat_pressure is not None:
+            throat_pressure = float(throat_pressure)
+            if not math.isfinite(throat_pressure) or throat_pressure <= 0.0:
+                raise ValueError("native outlet returned an invalid throat pressure")
+            throat_state = properties.from_ps(
+                throat_pressure, float(inlet.specific_entropy_J_kgK)
+            )
+            if throat_state.phase not in {"gas", "supercritical_gas", "supercritical"}:
+                raise ValueError("native outlet throat state is not gas-like")
+            source_trace.update({
+                "throat_pressure_pa_abs": throat_pressure,
+                "throat_temperature_k": float(throat_state.temperature_K),
+                "throat_density_kg_m3": float(throat_state.density_kg_m3),
+                "throat_specific_enthalpy_j_kg": float(throat_state.specific_enthalpy_J_kg),
+                "throat_mass_flux_kg_m2_s": float(getattr(hydraulic, "mass_flux_kg_m2_s")),
+                "provider_source_state_provenance": (
+                    "native upstream entropy and native hydraulic throat result"
+                ),
+            })
         steps.append({
             "time_s": elapsed,
             "mass_flow_kg_s": mass_flow,
@@ -114,14 +147,7 @@ def export_fixed_source_accident_history(
             ),
             "area_provenance": area_provenance,
             "velocity_origin": "mass_continuity_from_declared_area",
-            "provider_source_state": {
-                "source_pressure_pa_abs": float(inlet.pressure_Pa),
-                "source_temperature_k": float(inlet.temperature_K),
-                "source_density_kg_m3": float(inlet.density_kg_m3),
-                "source_specific_enthalpy_j_kg": float(inlet.specific_enthalpy_J_kg),
-                "opening": opening,
-                "choked": bool(getattr(hydraulic, "choked", False)),
-            },
+            "provider_source_state": source_trace,
         })
         if bool(getattr(hydraulic, "choked", False)):
             choked_count += 1

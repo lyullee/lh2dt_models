@@ -95,6 +95,21 @@ def test_stroke_limited_valve_native_export_requires_upstream_ledger():
     assert result["data"]["cumulative_mass_out_kg"] > 0.0
     assert result["data"]["cumulative_mass_out_kg"] < result["data"]["available_mass_kg"]
     assert len(result["data"]["steps"]) == 10
+    assert all(
+        all(
+            field in step["provider_source_state"]
+            for field in (
+                "source_specific_entropy_j_kgk",
+                "throat_pressure_pa_abs",
+                "throat_temperature_k",
+                "throat_density_kg_m3",
+                "throat_specific_enthalpy_j_kg",
+                "throat_mass_flux_kg_m2_s",
+                "provider_source_state_provenance",
+            )
+        )
+        for step in result["data"]["steps"]
+    )
 
 
 def test_stroke_limited_valve_rejects_missing_termination_ledger():
@@ -128,3 +143,5 @@ def test_vent_stack_native_export_uses_fixed_native_area():
     assert result["data"]["provider_meta"]["native_inventory_owner"] == "upstream_provider_declared"
     assert len(result["data"]["steps"]) == 10
     assert result["data"]["cumulative_mass_out_kg"] > 0.0
+    assert all("source_specific_entropy_j_kgk" in step["provider_source_state"] for step in result["data"]["steps"])
+    assert all("throat_pressure_pa_abs" not in step["provider_source_state"] for step in result["data"]["steps"])
