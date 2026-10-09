@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Callable, Iterable, Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any, Callable, Iterable
 
 import numpy as np
 from scipy.optimize import brentq
@@ -2146,6 +2147,292 @@ class LayeredTank:
             self._wall_heat_capacities_J_K * np.asarray(state.wall_temperatures_K)
         ))
         return fluid + wall
+
+    def export_accident_history(self, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Advance an explicit liquid outlet and export a PRISM liquid history.
+
+        The method is deliberately an accident boundary rather than a normal
+        tank snapshot.  The caller must declare the initial state, failed
+        opening, atmospheric boundary and finite diagnostic horizon.  The
+        tank owns the inventory ledger and the termination clock; a bounded
+        trace with remaining inventory is labelled
+        ``synthetic_diagnostic_horizon`` so a downstream QRA cannot promote it
+        to an inventory-depletion event.
+        """
+        if not isinstance(request, Mapping):
+            raise ValueError("accident export request must be a mapping")
+
+        def text(name: str) -> str:
+            value = request.get(name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+            return value.strip()
+
+        def number(
+            name: str,
+            default: float | None = None,
+            *,
+            positive: bool = True,
+        ) -> float:
+            value = request.get(name, default)
+            if isinstance(value, bool) or value is None:
+                raise ValueError(f"{name} must be numeric")
+            try:
+                result = float(value)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"{name} must be numeric") from error
+            valid = result > 0.0 if positive else result >= 0.0
+            if not math.isfinite(result) or not valid:
+                comparator = "positive" if positive else "non-negative"
+                raise ValueError(f"{name} must be finite and {comparator}")
+            return result
+
+        def vector(name: str, default: Sequence[float] | None = None) -> list[float]:
+            value = request.get(name, default)
+            if (
+                not isinstance(value, Sequence)
+                or isinstance(value, (str, bytes))
+                or len(value) != 3
+            ):
+                raise ValueError(f"{name} must contain three coordinates")
+            result: list[float] = []
+            for index, item in enumerate(value):
+                if isinstance(item, bool):
+                    raise ValueError(f"{name}[{index}] must be numeric")
+                try:
+                    coordinate = float(item)
+                except (TypeError, ValueError) as error:
+                    raise ValueError(f"{name}[{index}] must be numeric") from error
+                if not math.isfinite(coordinate):
+                    raise ValueError(f"{name}[{index}] must be finite")
+                result.append(coordinate)
+            if math.isclose(sum(item * item for item in result), 0.0, abs_tol=1.0e-20):
+                raise ValueError(f"{name} must not be the zero vector")
+            return result
+
+        event_id = text("event_id")
+        component_id = text("component_id")
+        port_id = text("port_id")
+        source_pressure = number(
+            "initial_pressure_pa_abs", request.get("source_pressure_pa_abs")
+        )
+        liquid_fraction = number("liquid_volume_fraction", positive=False)
+        if not 0.0 < liquid_fraction < 1.0:
+            raise ValueError("liquid_volume_fraction must lie between zero and one")
+        ambient_pressure = number("ambient_pressure_pa_abs", 101325.0)
+        ambient_temperature = number("ambient_temperature_k", 288.15)
+        opening_diameter = number("failure_opening_diameter_m")
+        horizon = number("horizon_s")
+        time_step = number("time_step_s", min(0.05, horizon))
+        discharge_coefficient = number("discharge_coefficient", 0.8)
+        if discharge_coefficient > 1.0:
+            raise ValueError("discharge_coefficient must not exceed one")
+        minimum_step = request.get("minimum_step_s")
+        minimum_step_s = (
+            min(time_step, max(time_step / 10.0, 1.0e-5))
+            if minimum_step is None
+            else number("minimum_step_s")
+        )
+        if minimum_step_s is not None and minimum_step_s > time_step:
+            raise ValueError("minimum_step_s must not exceed time_step_s")
+        liquid_cell_index_value = request.get(
+            "liquid_cell_index", self.parameters.liquid_cell_count - 1
+        )
+        if isinstance(liquid_cell_index_value, bool):
+            raise ValueError("liquid_cell_index must be an integer")
+        try:
+            liquid_cell_index = int(liquid_cell_index_value)
+        except (TypeError, ValueError) as error:
+            raise ValueError("liquid_cell_index must be an integer") from error
+        if liquid_cell_index != liquid_cell_index_value or not 0 <= liquid_cell_index < self.parameters.liquid_cell_count:
+            raise ValueError("liquid_cell_index is outside the configured liquid cells")
+        wall_temperature = number(
+            "wall_temperature_k",
+            self.properties.saturated_liquid(source_pressure).temperature_K,
+        )
+        position = vector("impact_position_m", [0.0, 0.0, 0.001])
+        direction = vector("direction_enu", [0.0, 0.0, -1.0])
+        direction_norm = math.sqrt(sum(item * item for item in direction))
+        direction = [item / direction_norm for item in direction]
+        droplet_diameter = number("droplet_diameter_m", 1.0e-3)
+        flight_time = number("droplet_flight_time_s", 0.0, positive=False)
+        if source_pressure <= ambient_pressure:
+            raise ValueError(
+                "initial pressure must exceed ambient pressure for an outward accident"
+            )
+
+        from .valve import Valve
+
+        initial = self.initialize_saturated(
+            source_pressure,
+            liquid_fraction,
+            wall_temperature_K=wall_temperature,
+        )
+        ambient = self.properties.from_pT(ambient_pressure, ambient_temperature)
+        area = math.pi * opening_diameter**2 / 4.0
+        valve = Valve(
+            area,
+            discharge_coefficient,
+            properties=self.properties,
+            allow_reverse=False,
+        )
+        initial_mass = self.total_mass_kg(initial)
+        state = initial
+        steps: list[dict[str, Any]] = []
+        cumulative_mass = 0.0
+        cumulative_enthalpy = 0.0
+        elapsed = 0.0
+        choked_count = 0
+        maximum_mass_residual = 0.0
+
+        while elapsed < horizon - 1.0e-12:
+            dt = min(time_step, horizon - elapsed)
+            sampled: list[Any] = []
+
+            def flow_callback(_time: float, thermo: LayeredThermoState):
+                upstream = thermo.liquid[liquid_cell_index]
+                hydraulic = valve.evaluate(upstream, ambient)
+                if not math.isfinite(hydraulic.mass_flow_kg_s) or hydraulic.mass_flow_kg_s < 0.0:
+                    raise ValueError("native tank outlet returned an invalid outward mass flow")
+                if not sampled:
+                    sampled.append(hydraulic)
+                liquid_flows = [[] for _ in range(self.parameters.liquid_cell_count)]
+                liquid_flows[liquid_cell_index] = [
+                    MassEnergyFlow(
+                        -hydraulic.mass_flow_kg_s,
+                        hydraulic.outlet_specific_enthalpy_J_kg,
+                        source="LayeredTank native accidental liquid outlet",
+                    )
+                ]
+                vapor_flows = [() for _ in range(self.parameters.vapor_cell_count)]
+                return tuple(tuple(item) for item in liquid_flows), tuple(vapor_flows)
+
+            result = self.simulate(
+                state,
+                dt,
+                dt,
+                ambient_temperature,
+                flow_callback=flow_callback,
+                minimum_step_s=minimum_step_s,
+            )[-1]
+            if not sampled:
+                raise ValueError("native tank outlet did not produce a hydraulic sample")
+            hydraulic = sampled[0]
+            mass_out = max(0.0, -float(result.cumulative_boundary_mass_kg))
+            enthalpy = float(hydraulic.outlet_specific_enthalpy_J_kg)
+            exit_state = self.properties.from_ph(ambient_pressure, enthalpy)
+            quality = exit_state.quality
+            if quality is None:
+                if exit_state.phase in {"gas", "supercritical_gas", "supercritical"}:
+                    quality = 1.0
+                elif exit_state.phase in {"liquid", "supercritical_liquid"}:
+                    quality = 0.0
+                else:
+                    raise ValueError("native tank outlet has an unsupported exit phase")
+            quality = min(1.0, max(0.0, float(quality)))
+            gas_flow = mass_out * quality
+            ground_flow = mass_out - gas_flow
+            droplet = {
+                "ground_liquid_mass_flow_kg_s": ground_flow / dt,
+                "airborne_liquid_mass_flow_kg_s": 0.0,
+                "flight_time_s": flight_time,
+                "impact_position_m": position,
+                "droplet_diameter_m": droplet_diameter,
+            }
+            gas_fields: dict[str, Any] = {}
+            if gas_flow > 1.0e-12:
+                gas_fields = {
+                    "gas_pressure_pa_abs": ambient_pressure,
+                    "gas_temperature_k": float(exit_state.temperature_K),
+                    "gas_density_kg_m3": float(exit_state.density_kg_m3),
+                    "gas_effective_area_m2": area,
+                    "gas_velocity_m_s": gas_flow / (exit_state.density_kg_m3 * area),
+                    "gas_velocity_origin": "mass_continuity_from_declared_area",
+                }
+            steps.append({
+                "time_s": elapsed,
+                "total_mass_flow_kg_s": mass_out / dt,
+                "gas_mass_flow_kg_s": gas_flow / dt,
+                "ground_liquid_mass_flow_kg_s": ground_flow / dt,
+                "airborne_liquid_mass_flow_kg_s": 0.0,
+                "specific_enthalpy_j_kg": enthalpy,
+                "droplet_class_outcomes": [droplet],
+                **gas_fields,
+                "provider_source_state": {
+                    "source_pressure_pa_abs": float(result.thermo.liquid[liquid_cell_index].pressure_Pa),
+                    "source_temperature_k": float(result.thermo.liquid[liquid_cell_index].temperature_K),
+                    "source_specific_enthalpy_j_kg": float(result.thermo.liquid[liquid_cell_index].specific_enthalpy_J_kg),
+                    "throat_pressure_pa_abs": float(hydraulic.throat_pressure_Pa),
+                    "throat_mass_flux_kg_m2_s": float(hydraulic.mass_flux_kg_m2_s),
+                    "choked": bool(hydraulic.choked),
+                    "liquid_cell_index": liquid_cell_index,
+                },
+            })
+            if hydraulic.choked:
+                choked_count += 1
+            cumulative_mass += mass_out
+            cumulative_enthalpy += mass_out * enthalpy
+            state = result.state
+            elapsed += dt
+            residual = initial_mass - cumulative_mass - self.total_mass_kg(state)
+            maximum_mass_residual = max(maximum_mass_residual, abs(residual))
+            if self.total_mass_kg(state) <= max(initial_mass * 1.0e-9, 1.0e-12):
+                break
+
+        final_mass = self.total_mass_kg(state)
+        depleted = final_mass <= max(initial_mass * 1.0e-9, 1.0e-12)
+        termination_basis = "inventory_depletion" if depleted else "synthetic_diagnostic_horizon"
+        termination_provenance = (
+            "LayeredTank finite-volume state reached the explicit positive inventory threshold"
+            if depleted
+            else "LayeredTank finite-volume state stopped at the caller-declared bounded horizon; residual inventory retained"
+        )
+        phase_basis = "two_phase" if any(
+            step["gas_mass_flow_kg_s"] > 1.0e-12
+            and step["ground_liquid_mass_flow_kg_s"] > 1.0e-12
+            for step in steps
+        ) else "liquid"
+        return {
+            "provider_export_schema": "prism.external_accident_history.v1",
+            "provider_model": f"{type(self).__module__}.{type(self).__qualname__}",
+            "provider_source_digest": request.get("provider_source_digest"),
+            "provider_state_snapshot_digest": request.get("state_snapshot_digest"),
+            "data": {
+                "event_kind": "accidental_leak",
+                "event_id": event_id,
+                "component_id": component_id,
+                "port_id": port_id,
+                "duration_s": elapsed,
+                "available_mass_kg": initial_mass,
+                "cumulative_mass_out_kg": cumulative_mass,
+                "cumulative_specific_enthalpy_out_j": cumulative_enthalpy,
+                "termination_basis": termination_basis,
+                "termination_provenance": termination_provenance,
+                "upstream_service": "LH2",
+                "fluid": "Hydrogen",
+                "phase_basis": phase_basis,
+                "reference_area_m2": area,
+                "reference_area_provenance": "explicit failed atmospheric opening area",
+                "droplet_partition_provenance": "native LayeredTank outlet flash at ambient pressure; ground liquid retained; airborne liquid set to zero",
+                "steps": steps,
+                "provider_meta": {
+                    "native_inventory_owner": "LayeredTank",
+                    "initial_mass_kg": initial_mass,
+                    "final_mass_kg": final_mass,
+                    "residual_mass_kg": initial_mass - cumulative_mass - final_mass,
+                    "maximum_mass_balance_residual_kg": maximum_mass_residual,
+                    "initial_pressure_pa_abs": source_pressure,
+                    "initial_liquid_volume_fraction": liquid_fraction,
+                    "liquid_cell_index": liquid_cell_index,
+                    "time_step_s": time_step,
+                    "valve": {
+                        "area_m2": area,
+                        "discharge_coefficient": discharge_coefficient,
+                        "choked_intervals": choked_count,
+                    },
+                },
+            },
+        }
 
     def simulate(
         self,
