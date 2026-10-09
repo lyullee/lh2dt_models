@@ -45,11 +45,24 @@ def test_native_pipe_export_closes_gas_inventory():
     assert all(step["provider_source_state"]["choked"] for step in data["steps"])
 
 
-def test_native_pipe_export_rejects_liquid_source_without_liquid_contract():
+def test_native_pipe_export_resolves_explicit_two_phase_source():
     payload = request()
-    payload.update({"initial_pressure_pa_abs": 500_000.0, "initial_temperature_k": 27.0})
-    with pytest.raises(ValueError, match="requires a gas-like source state"):
-        make_pipe().export_accident_history(payload)
+    payload.update({
+        "initial_pressure_pa_abs": 500_000.0,
+        "initial_temperature_k": 27.0,
+        "initial_quality": 0.1,
+        "horizon_s": 0.01,
+        "time_step_s": 0.005,
+    })
+    result = make_pipe().export_accident_history(payload)
+    data = result["data"]
+    assert data["phase_basis"] == "two_phase"
+    assert data["cumulative_specific_enthalpy_out_j"] > 0.0
+    assert data["cumulative_mass_out_kg"] > 0.0
+    assert data["steps"][0]["gas_mass_flow_kg_s"] > 0.0
+    assert data["steps"][0]["ground_liquid_mass_flow_kg_s"] > 0.0
+    assert data["steps"][0]["airborne_liquid_mass_flow_kg_s"] == 0.0
+    assert data["provider_meta"]["residual_mass_kg"] == pytest.approx(0.0, abs=1.0e-12)
 
 
 def test_native_pipe_export_rejects_opening_larger_than_pipe():

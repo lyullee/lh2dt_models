@@ -332,9 +332,12 @@ class DynamicHEMPipe:
         A failed opening is an explicit accident boundary.  The pipe owns its
         finite fluid and wall state while the caller owns the opening,
         atmospheric boundary and finite observation horizon.  This method is
-        intentionally gas-only until a provider-resolved liquid/two-phase
-        pipe boundary is implemented; liquid inputs are rejected rather than
-        silently converted to a gas packet.
+        The initial state may be a gas, saturated liquid, or explicit
+        homogeneous two-phase state.  Liquid/two-phase outlets are flashed at
+        the declared atmospheric boundary and exported with ground-liquid and
+        gas mass branches.  Airborne liquid remains zero until an independent
+        droplet adapter is supplied; the method never silently converts a
+        liquid source to a gas-only packet.
         """
         if not isinstance(request, Mapping):
             raise ValueError("accident export request must be a mapping")
@@ -423,11 +426,30 @@ class DynamicHEMPipe:
         if opening_diameter > self.diameter:
             raise ValueError("failure opening diameter must not exceed pipe diameter")
 
-        source = self.properties.from_pT(source_pressure, source_temperature)
-        if source.phase not in {"gas", "supercritical_gas", "supercritical"}:
-            raise ValueError(
-                "DynamicHEMPipe accident export currently requires a gas-like source state"
+        initial_quality = request.get("initial_quality")
+        if initial_quality is None:
+            source = self.properties.from_pT(source_pressure, source_temperature)
+        else:
+            quality = number("initial_quality", positive=False)
+            if not 0.0 <= quality <= 1.0:
+                raise ValueError("initial_quality must lie between zero and one")
+            liquid = self.properties.saturated_liquid(source_pressure)
+            vapor = self.properties.saturated_vapor(source_pressure)
+            source = self.properties.from_ph(
+                source_pressure,
+                liquid.specific_enthalpy_J_kg
+                + quality * (vapor.specific_enthalpy_J_kg - liquid.specific_enthalpy_J_kg),
             )
+        source_is_gas = source.phase in {"gas", "supercritical_gas", "supercritical"}
+        if not source_is_gas and source.quality is None:
+            raise ValueError("DynamicHEMPipe accident export source phase is unsupported")
+        source_phase_basis = (
+            "two_phase"
+            if source.quality is not None and 0.0 < float(source.quality) < 1.0
+            else "liquid"
+            if source.quality is not None and float(source.quality) <= 1.0e-8
+            else "gas"
+        )
         ambient = self.properties.from_pT(ambient_pressure, ambient_temperature)
         from .valve import Valve
 
@@ -495,33 +517,73 @@ class DynamicHEMPipe:
             mass_out = max(0.0, -averaged.mass_kg_s * dt)
             enthalpy = float(hydraulic.outlet_specific_enthalpy_J_kg)
             exit_state = self.properties.from_ph(ambient_pressure, enthalpy)
-            if exit_state.phase not in {"gas", "supercritical_gas", "supercritical"}:
-                raise ValueError("native pipe outlet is not gas-like at the atmospheric boundary")
-            gas_velocity = (
-                mass_out / dt / (exit_state.density_kg_m3 * area)
-                if mass_out > 0.0 else 0.0
-            )
-            steps.append({
-                "time_s": elapsed,
-                "mass_flow_kg_s": mass_out / dt,
-                "pressure_pa_abs": ambient_pressure,
-                "specific_enthalpy_j_kg": enthalpy,
-                "temperature_k": float(exit_state.temperature_K),
-                "density_kg_m3": float(exit_state.density_kg_m3),
-                "effective_area_m2": area,
-                "velocity_m_s": gas_velocity,
-                "area_provenance": "explicit failed pipe opening area",
-                "velocity_origin": "mass_continuity_from_declared_area",
-                "provider_source_state": {
-                    "source_pressure_pa_abs": float(fluid.pressure_Pa),
-                    "source_temperature_k": float(fluid.temperature_K),
-                    "source_density_kg_m3": float(fluid.density_kg_m3),
-                    "source_specific_enthalpy_j_kg": float(fluid.specific_enthalpy_J_kg),
-                    "throat_pressure_pa_abs": float(hydraulic.throat_pressure_Pa),
-                    "throat_mass_flux_kg_m2_s": float(hydraulic.mass_flux_kg_m2_s),
-                    "choked": bool(hydraulic.choked),
-                },
-            })
+            if source_is_gas:
+                if exit_state.phase not in {"gas", "supercritical_gas", "supercritical"}:
+                    raise ValueError("native pipe outlet is not gas-like at the atmospheric boundary")
+                gas_flow = mass_out / dt
+                ground_flow = 0.0
+                gas_velocity = (
+                    gas_flow / (exit_state.density_kg_m3 * area)
+                    if gas_flow > 0.0 else 0.0
+                )
+                step = {
+                    "time_s": elapsed,
+                    "mass_flow_kg_s": gas_flow,
+                    "pressure_pa_abs": ambient_pressure,
+                    "specific_enthalpy_j_kg": enthalpy,
+                    "temperature_k": float(exit_state.temperature_K),
+                    "density_kg_m3": float(exit_state.density_kg_m3),
+                    "effective_area_m2": area,
+                    "velocity_m_s": gas_velocity,
+                    "area_provenance": "explicit failed pipe opening area",
+                    "velocity_origin": "mass_continuity_from_declared_area",
+                    "provider_source_state": {
+                        "source_pressure_pa_abs": float(fluid.pressure_Pa),
+                        "source_temperature_k": float(fluid.temperature_K),
+                        "source_density_kg_m3": float(fluid.density_kg_m3),
+                        "source_specific_enthalpy_j_kg": float(fluid.specific_enthalpy_J_kg),
+                        "throat_pressure_pa_abs": float(hydraulic.throat_pressure_Pa),
+                        "throat_mass_flux_kg_m2_s": float(hydraulic.mass_flux_kg_m2_s),
+                        "choked": bool(hydraulic.choked),
+                    },
+                }
+            else:
+                quality = exit_state.quality
+                if quality is None:
+                    if exit_state.phase in {"gas", "supercritical_gas", "supercritical"}:
+                        quality = 1.0
+                    elif exit_state.phase in {"liquid", "supercritical_liquid"}:
+                        quality = 0.0
+                    else:
+                        raise ValueError("native pipe outlet has an unsupported atmospheric phase")
+                quality = min(1.0, max(0.0, float(quality)))
+                gas_flow = mass_out * quality / dt
+                ground_flow = mass_out * (1.0 - quality) / dt
+                step = {
+                    "time_s": elapsed,
+                    "total_mass_flow_kg_s": mass_out / dt,
+                    "gas_mass_flow_kg_s": gas_flow,
+                    "ground_liquid_mass_flow_kg_s": ground_flow,
+                    "airborne_liquid_mass_flow_kg_s": 0.0,
+                    "specific_enthalpy_j_kg": enthalpy,
+                    "gas_pressure_pa_abs": ambient_pressure if gas_flow > 1.0e-12 else None,
+                    "gas_temperature_k": float(exit_state.temperature_K) if gas_flow > 1.0e-12 else None,
+                    "gas_density_kg_m3": float(exit_state.density_kg_m3) if gas_flow > 1.0e-12 else None,
+                    "gas_effective_area_m2": area if gas_flow > 1.0e-12 else None,
+                    "gas_velocity_m_s": (
+                        gas_flow / (exit_state.density_kg_m3 * area)
+                        if gas_flow > 1.0e-12 else None
+                    ),
+                    "gas_velocity_origin": "mass_continuity_from_declared_area" if gas_flow > 1.0e-12 else None,
+                    "droplet_class_outcomes": [{
+                        "ground_liquid_mass_flow_kg_s": ground_flow,
+                        "airborne_liquid_mass_flow_kg_s": 0.0,
+                        "flight_time_s": number("droplet_flight_time_s", 0.0, positive=False),
+                        "impact_position_m": list(vector("impact_position_m", (0.0, 0.0, 0.001))),
+                        "droplet_diameter_m": number("droplet_diameter_m", 1.0e-3),
+                    }],
+                }
+            steps.append(step)
             if hydraulic.choked:
                 choked_count += 1
             cumulative_mass += mass_out
@@ -564,10 +626,20 @@ class DynamicHEMPipe:
                 "duration_s": elapsed,
                 "available_mass_kg": initial_mass,
                 "cumulative_mass_out_kg": cumulative_mass,
+                "cumulative_specific_enthalpy_out_j": cumulative_enthalpy,
                 "cumulative_static_enthalpy_out_j": cumulative_enthalpy,
                 "termination_basis": termination_basis,
                 "termination_provenance": termination_provenance,
+                "upstream_service": "LH2",
                 "fluid": "Hydrogen",
+                "phase_basis": source_phase_basis,
+                "reference_area_m2": area,
+                "reference_area_provenance": "explicit failed pipe opening area",
+                "droplet_partition_provenance": (
+                    "DynamicHEMPipe HEM outlet flash at ambient pressure; ground liquid retained; airborne liquid set to zero"
+                    if not source_is_gas else
+                    "DynamicHEMPipe gas outlet at ambient pressure; no liquid partition"
+                ),
                 "steps": steps,
                 "provider_meta": {
                     "native_inventory_owner": "DynamicHEMPipe",
