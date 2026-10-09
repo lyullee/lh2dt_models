@@ -57,3 +57,21 @@ def test_native_pipe_export_rejects_opening_larger_than_pipe():
     payload["failure_opening_diameter_m"] = 0.2
     with pytest.raises(ValueError, match="must not exceed pipe diameter"):
         make_pipe().export_accident_history(payload)
+
+
+def test_native_pipe_export_records_provider_owned_isolation_success():
+    payload = request()
+    payload.update({
+        "horizon_s": 0.1,
+        "time_step_s": 0.05,
+        "isolation_time_s": 0.05,
+        "post_isolation_observation_s": 0.01,
+    })
+    result = make_pipe().export_accident_history(payload)
+    data = result["data"]
+
+    assert data["termination_basis"] == "reviewed_isolation_success"
+    assert data["provider_meta"]["isolation_success"] is True
+    assert data["steps"][0]["mass_flow_kg_s"] > 0.0
+    assert data["steps"][1]["mass_flow_kg_s"] == pytest.approx(0.0)
+    assert data["cumulative_mass_out_kg"] < data["available_mass_kg"]

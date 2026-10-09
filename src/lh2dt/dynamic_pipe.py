@@ -402,6 +402,20 @@ class DynamicHEMPipe:
         discharge_coefficient = number("discharge_coefficient", 0.8)
         if discharge_coefficient > 1.0:
             raise ValueError("discharge_coefficient must not exceed one")
+        isolation_value = request.get("isolation_time_s")
+        isolation_time = None if isolation_value is None else number(
+            "isolation_time_s", positive=False
+        )
+        if isolation_time is not None and isolation_time > horizon:
+            raise ValueError("isolation_time_s must not exceed horizon_s")
+        post_isolation_delay = number(
+            "post_isolation_observation_s", 0.0, positive=False
+        )
+        effective_horizon = horizon if isolation_time is None else min(
+            horizon, isolation_time + post_isolation_delay
+        )
+        if effective_horizon <= 0.0:
+            raise ValueError("isolation horizon must leave a positive observation interval")
         wall_temperature = number("wall_temperature_k", source_temperature)
         if source_pressure <= ambient_pressure:
             raise ValueError("initial pressure must exceed ambient pressure for an outward accident")
@@ -431,9 +445,11 @@ class DynamicHEMPipe:
         elapsed = 0.0
         choked_count = 0
 
-        def derivative_at(candidate: DynamicHEMPipeState) -> tuple[DynamicHEMPipeDerivative, Any, ThermoState]:
+        def derivative_at(
+            candidate: DynamicHEMPipeState, opening: float
+        ) -> tuple[DynamicHEMPipeDerivative, Any, ThermoState]:
             fluid = self.thermo(candidate)
-            hydraulic = valve.evaluate(fluid, ambient)
+            hydraulic = valve.evaluate(fluid, ambient, opening=opening)
             if not math.isfinite(hydraulic.mass_flow_kg_s) or hydraulic.mass_flow_kg_s < 0.0:
                 raise ValueError("native pipe outlet returned an invalid outward mass flow")
             derivative = self.derivative_from_flows(
@@ -457,12 +473,23 @@ class DynamicHEMPipe:
             }
             return DynamicHEMPipeDerivative(**values)
 
-        while elapsed < horizon - 1.0e-12:
-            dt = min(time_step, horizon - elapsed)
-            k1, hydraulic, fluid = derivative_at(state)
-            k2, _, _ = derivative_at(self._advance(state, k1, dt / 2.0))
-            k3, _, _ = derivative_at(self._advance(state, k2, dt / 2.0))
-            k4, _, _ = derivative_at(self._advance(state, k3, dt))
+        while elapsed < effective_horizon - 1.0e-12:
+            dt = min(time_step, effective_horizon - elapsed)
+            opening_at = lambda absolute_time: (
+                0.0
+                if isolation_time is not None and absolute_time >= isolation_time
+                else 1.0
+            )
+            k1, hydraulic, fluid = derivative_at(state, opening_at(elapsed))
+            k2, _, _ = derivative_at(
+                self._advance(state, k1, dt / 2.0), opening_at(elapsed + dt / 2.0)
+            )
+            k3, _, _ = derivative_at(
+                self._advance(state, k2, dt / 2.0), opening_at(elapsed + dt / 2.0)
+            )
+            k4, _, _ = derivative_at(
+                self._advance(state, k3, dt), opening_at(elapsed + dt)
+            )
             averaged = combined(k1, k2, k3, k4)
             next_state = self._advance(state, averaged, dt)
             mass_out = max(0.0, -averaged.mass_kg_s * dt)
@@ -505,10 +532,23 @@ class DynamicHEMPipe:
                 break
 
         depleted = state.mass_kg <= max(initial_mass * 1.0e-9, 1.0e-12)
-        termination_basis = "inventory_depletion" if depleted else "synthetic_diagnostic_horizon"
+        isolation_success = (
+            isolation_time is not None
+            and elapsed >= effective_horizon - 1.0e-12
+            and effective_horizon >= isolation_time
+        )
+        termination_basis = (
+            "inventory_depletion"
+            if depleted
+            else "reviewed_isolation_success"
+            if isolation_success
+            else "synthetic_diagnostic_horizon"
+        )
         termination_provenance = (
             "DynamicHEMPipe finite-volume mass state reached the explicit positive inventory threshold"
             if depleted else
+            "DynamicHEMPipe native outlet closed at the caller-declared isolation time and remained closed through the observation delay"
+            if isolation_success else
             "DynamicHEMPipe finite-volume state stopped at the caller-declared bounded horizon; residual inventory retained"
         )
         return {
@@ -534,6 +574,9 @@ class DynamicHEMPipe:
                     "initial_mass_kg": initial_mass,
                     "final_mass_kg": float(state.mass_kg),
                     "residual_mass_kg": initial_mass - cumulative_mass - float(state.mass_kg),
+                    "isolation_time_s": isolation_time,
+                    "post_isolation_observation_s": post_isolation_delay,
+                    "isolation_success": isolation_success,
                     "time_step_s": time_step,
                     "valve": {
                         "area_m2": area,
