@@ -95,3 +95,28 @@ def test_native_pipe_export_records_provider_owned_isolation_success():
     assert data["steps"][0]["mass_flow_kg_s"] > 0.0
     assert data["steps"][1]["mass_flow_kg_s"] == pytest.approx(0.0)
     assert data["cumulative_mass_out_kg"] < data["available_mass_kg"]
+
+
+def test_native_full_bore_export_terminates_at_pressure_equalization():
+    pipe = DynamicHEMPipe(
+        length_m=0.1,
+        inner_diameter_m=0.01,
+        roughness_m=1.0e-6,
+        wall_heat_capacity_J_K=1.0e5,
+        ambient_temperature_K=288.15,
+    )
+    payload = request()
+    payload.update({
+        "initial_pressure_pa_abs": 150_000.0,
+        "initial_temperature_k": 288.15,
+        "failure_opening_diameter_m": 0.01,
+        "horizon_s": 10.0,
+        "time_step_s": 0.01,
+    })
+    result = pipe.export_accident_history(payload)
+    data = result["data"]
+    assert data["termination_basis"] == "model_pressure_equalization"
+    assert data["provider_meta"]["pressure_equalized"] is True
+    assert data["provider_meta"]["final_pressure_pa_abs"] <= 101_325.0 * (1.0 + 1.0e-8)
+    assert data["duration_s"] < payload["horizon_s"]
+    assert data["cumulative_mass_out_kg"] < data["available_mass_kg"]

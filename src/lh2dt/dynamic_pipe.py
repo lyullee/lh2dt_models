@@ -471,6 +471,7 @@ class DynamicHEMPipe:
         cumulative_enthalpy = 0.0
         elapsed = 0.0
         choked_count = 0
+        pressure_equalized = False
 
         def derivative_at(
             candidate: DynamicHEMPipeState, opening: float
@@ -508,6 +509,24 @@ class DynamicHEMPipe:
                 else 1.0
             )
             k1, hydraulic, fluid = derivative_at(state, opening_at(elapsed))
+            flow_threshold = max(
+                1.0e-12,
+                initial_mass * 1.0e-10 / max(effective_horizon, 1.0e-12),
+            )
+            pressure_check_allowed = (
+                isolation_time is None
+                or elapsed >= effective_horizon - 1.0e-12
+            )
+            if pressure_check_allowed and (
+                fluid.pressure_Pa <= ambient_pressure * (1.0 + 1.0e-8)
+                or hydraulic.mass_flow_kg_s <= flow_threshold
+            ):
+                pressure_equalized = True
+                break
+            if k1.mass_kg_s < 0.0:
+                safe_dt = 0.25 * state.mass_kg / (-k1.mass_kg_s)
+                if safe_dt < dt:
+                    dt = max(safe_dt, 1.0e-12)
             k2, _, _ = derivative_at(
                 self._advance(state, k1, dt / 2.0), opening_at(elapsed + dt / 2.0)
             )
@@ -609,6 +628,8 @@ class DynamicHEMPipe:
             if depleted
             else "reviewed_isolation_success"
             if isolation_success
+            else "model_pressure_equalization"
+            if pressure_equalized
             else "synthetic_diagnostic_horizon"
         )
         termination_provenance = (
@@ -616,8 +637,11 @@ class DynamicHEMPipe:
             if depleted else
             "DynamicHEMPipe native outlet closed at the caller-declared isolation time and remained closed through the observation delay"
             if isolation_success else
+            "DynamicHEMPipe native pressure reached the atmospheric boundary and the outlet mass flow fell below the resolved termination threshold"
+            if pressure_equalized else
             "DynamicHEMPipe finite-volume state stopped at the caller-declared bounded horizon; residual inventory retained"
         )
+        final_fluid = self.thermo(state)
         return {
             "provider_export_schema": "prism.external_accident_history.v1",
             "provider_model": f"{type(self).__module__}.{type(self).__qualname__}",
@@ -651,6 +675,8 @@ class DynamicHEMPipe:
                     "initial_mass_kg": initial_mass,
                     "final_mass_kg": float(state.mass_kg),
                     "residual_mass_kg": initial_mass - cumulative_mass - float(state.mass_kg),
+                    "final_pressure_pa_abs": float(final_fluid.pressure_Pa),
+                    "pressure_equalized": pressure_equalized,
                     "isolation_time_s": isolation_time,
                     "post_isolation_observation_s": post_isolation_delay,
                     "isolation_success": isolation_success,
