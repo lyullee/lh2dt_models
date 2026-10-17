@@ -549,7 +549,7 @@ class DynamicVaporizer:
             max_abs_pressure_residual_pa=maximum_pressure_residual,
             pressure_tolerance_pa=max(1.0e-6, source_pressure * 1.0e-10),
             provenance=(
-                "DynamicVaporizer recomputed pressure from its finite-volume mass, "
+                f"{type(self).__name__} recomputed pressure from its finite-volume mass, "
                 "internal-energy, and wall-temperature state before every native "
                 "outlet evaluation; the digest covers the initial and terminal "
                 "provider state history."
