@@ -474,7 +474,20 @@ class DynamicHEMPipe:
         elapsed = 0.0
         choked_count = 0
         pressure_equalized = False
+        pressure_equalization_time_s: float | None = None
+        # A natural pressure stop is only a release boundary after the
+        # provider observes the terminal state for an explicit positive tail.
+        # The tail is deliberately separate from the release duration so the
+        # downstream ledger can distinguish mass-release time from stop
+        # evidence.
+        post_pressure_equalization_observation_s = number(
+            "post_pressure_equalization_observation_s", 0.0, positive=False
+        )
         maximum_inventory_residual = 0.0
+        flow_threshold = max(
+            1.0e-12,
+            initial_mass * 1.0e-10 / max(effective_horizon, 1.0e-12),
+        )
 
         def record_state(time_s: float, current_state: DynamicHEMPipeState, current_fluid: ThermoState) -> None:
             state_history.append({
@@ -523,10 +536,6 @@ class DynamicHEMPipe:
                 else 1.0
             )
             k1, hydraulic, fluid = derivative_at(state, opening_at(elapsed))
-            flow_threshold = max(
-                1.0e-12,
-                initial_mass * 1.0e-10 / max(effective_horizon, 1.0e-12),
-            )
             pressure_check_allowed = (
                 isolation_time is None
                 or elapsed >= effective_horizon - 1.0e-12
@@ -536,6 +545,7 @@ class DynamicHEMPipe:
                 or hydraulic.mass_flow_kg_s <= flow_threshold
             ):
                 pressure_equalized = True
+                pressure_equalization_time_s = elapsed
                 break
             if k1.mass_kg_s < 0.0:
                 safe_dt = 0.25 * state.mass_kg / (-k1.mass_kg_s)
@@ -571,6 +581,7 @@ class DynamicHEMPipe:
                 dt *= event_fraction
                 next_state = self._advance(state, averaged, dt)
                 pressure_equalized = True
+                pressure_equalization_time_s = elapsed + dt
             mass_out = max(0.0, -averaged.mass_kg_s * dt)
             enthalpy = float(hydraulic.outlet_specific_enthalpy_J_kg)
             exit_state = self.properties.from_ph(ambient_pressure, enthalpy)
@@ -677,6 +688,38 @@ class DynamicHEMPipe:
             if state.mass_kg <= max(initial_mass * 1.0e-9, 1.0e-12):
                 break
 
+        final_fluid = self.thermo(state)
+        max_post_pressure_equalization_flow_kg_s: float | None = None
+        pressure_equalization_success: bool | None = None
+        if pressure_equalized:
+            # Re-evaluate the native valve at the terminal provider state.  A
+            # positive observation tail is required in the request; no tail
+            # is invented when the caller omits it.
+            terminal_hydraulic = valve.evaluate(final_fluid, ambient, opening=1.0)
+            # CoolProp/finite-volume roundoff can leave a few nanobar above
+            # the declared ambient boundary.  At or inside this explicit
+            # pressure tolerance the provider records the terminal outward
+            # flow as zero; this is a numerical boundary rule, not an
+            # inferred release-duration substitution.
+            max_post_pressure_equalization_flow_kg_s = (
+                0.0
+                if final_fluid.pressure_Pa <= ambient_pressure * (1.0 + 1.0e-8)
+                else max(0.0, float(terminal_hydraulic.mass_flow_kg_s))
+            )
+            pressure_equalization_success = bool(
+                pressure_equalization_time_s is not None
+                and post_pressure_equalization_observation_s > 0.0
+                and final_fluid.pressure_Pa <= ambient_pressure * (1.0 + 1.0e-8)
+                and max_post_pressure_equalization_flow_kg_s <= flow_threshold
+            )
+            if post_pressure_equalization_observation_s > 0.0:
+                record_state(
+                    float(pressure_equalization_time_s or elapsed)
+                    + post_pressure_equalization_observation_s,
+                    state,
+                    final_fluid,
+                )
+
         depleted = state.mass_kg <= max(initial_mass * 1.0e-9, 1.0e-12)
         isolation_success = (
             isolation_time is not None
@@ -701,7 +744,6 @@ class DynamicHEMPipe:
             if pressure_equalized else
             "DynamicHEMPipe finite-volume state stopped at the caller-declared bounded horizon; residual inventory retained"
         )
-        final_fluid = self.thermo(state)
         maximum_pressure_residual = 0.0
         for row in state_history:
             reconstructed = self.thermo(
@@ -739,6 +781,7 @@ class DynamicHEMPipe:
                 "component_id": component_id,
                 "port_id": port_id,
                 "duration_s": elapsed,
+                "ambient_pressure_pa_abs": ambient_pressure,
                 "available_mass_kg": initial_mass,
                 "cumulative_mass_out_kg": cumulative_mass,
                 "cumulative_specific_enthalpy_out_j": cumulative_enthalpy,
@@ -763,6 +806,24 @@ class DynamicHEMPipe:
                     "residual_mass_kg": initial_mass - cumulative_mass - float(state.mass_kg),
                     "final_pressure_pa_abs": float(final_fluid.pressure_Pa),
                     "pressure_equalized": pressure_equalized,
+                    "pressure_equalization_time_s": pressure_equalization_time_s,
+                    "post_pressure_equalization_observation_s": (
+                        post_pressure_equalization_observation_s
+                        if pressure_equalized
+                        else None
+                    ),
+                    "pressure_equalization_success": pressure_equalization_success,
+                    "terminal_source_pressure_pa_abs": (
+                        float(final_fluid.pressure_Pa) if pressure_equalized else None
+                    ),
+                    "ambient_pressure_pa_abs": (
+                        ambient_pressure if pressure_equalized else None
+                    ),
+                    "max_post_pressure_equalization_flow_kg_s": (
+                        max_post_pressure_equalization_flow_kg_s
+                        if pressure_equalized
+                        else None
+                    ),
                     "isolation_time_s": isolation_time,
                     "post_isolation_observation_s": post_isolation_delay,
                     "isolation_success": isolation_success,

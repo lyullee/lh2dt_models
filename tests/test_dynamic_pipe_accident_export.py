@@ -148,3 +148,31 @@ def test_native_full_bore_export_terminates_at_pressure_equalization():
     )
     assert data["duration_s"] < payload["horizon_s"]
     assert data["cumulative_mass_out_kg"] < data["available_mass_kg"]
+
+
+def test_native_full_bore_export_declares_pressure_equalization_observation():
+    pipe = DynamicHEMPipe(
+        length_m=0.1,
+        inner_diameter_m=0.01,
+        roughness_m=1.0e-6,
+        wall_heat_capacity_J_K=1.0e5,
+        ambient_temperature_K=288.15,
+    )
+    payload = request()
+    payload.update({
+        "initial_pressure_pa_abs": 150_000.0,
+        "initial_temperature_k": 288.15,
+        "failure_opening_diameter_m": 0.01,
+        "horizon_s": 10.0,
+        "time_step_s": 0.01,
+        "post_pressure_equalization_observation_s": 0.2,
+    })
+    result = pipe.export_accident_history(payload)
+    data = result["data"]
+    meta = data["provider_meta"]
+    assert data["termination_basis"] == "model_pressure_equalization"
+    assert meta["pressure_equalization_success"] is True
+    assert meta["pressure_equalization_time_s"] == pytest.approx(data["duration_s"])
+    assert meta["post_pressure_equalization_observation_s"] == pytest.approx(0.2)
+    assert meta["terminal_source_pressure_pa_abs"] <= meta["ambient_pressure_pa_abs"] + 1.0e-3
+    assert meta["max_post_pressure_equalization_flow_kg_s"] == pytest.approx(0.0, abs=1.0e-12)
