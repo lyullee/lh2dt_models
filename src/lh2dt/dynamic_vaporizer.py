@@ -415,6 +415,20 @@ class DynamicVaporizer:
         wall_temperature = number("wall_temperature_k", source_temperature)
         if horizon < time_step:
             time_step = horizon
+        isolation_value = request.get("isolation_time_s")
+        isolation_time = None if isolation_value is None else number(
+            "isolation_time_s", positive=False
+        )
+        if isolation_time is not None and isolation_time > horizon:
+            raise ValueError("isolation_time_s must not exceed horizon_s")
+        post_isolation_delay = number(
+            "post_isolation_observation_s", 0.0, positive=False
+        )
+        effective_horizon = horizon if isolation_time is None else min(
+            horizon, isolation_time + post_isolation_delay
+        )
+        if effective_horizon <= 0.0:
+            raise ValueError("isolation horizon must leave a positive observation interval")
         if source_pressure <= ambient_pressure:
             raise ValueError("source pressure must exceed ambient pressure for an outward accident")
 
@@ -462,9 +476,12 @@ class DynamicVaporizer:
             })
 
         record_state(0.0, state, self.thermo(state), 0.0)
-        while elapsed < horizon - 1.0e-12:
-            dt = min(time_step, horizon - elapsed)
+        while elapsed < effective_horizon - 1.0e-12:
+            dt = min(time_step, effective_horizon - elapsed)
             fluid = self.thermo(state)
+            valve.set_target_opening(
+                0.0 if isolation_time is not None and elapsed >= isolation_time else 1.0
+            )
             opening = valve.advance(dt)
             hydraulic = valve.evaluate(fluid, outlet)
             mass_flow = float(hydraulic.mass_flow_kg_s)
@@ -475,7 +492,11 @@ class DynamicVaporizer:
             )
             if exit_state.phase not in {"gas", "supercritical_gas", "supercritical"}:
                 raise ValueError("accident outlet is not gas-like at the declared ambient boundary")
-            effective_area = area * opening
+            # Keep the declared failed opening area positive even while the
+            # commanded valve is closing.  The gas-boundary contract requires
+            # a positive reference area for every interval; the instantaneous
+            # opening fraction is retained separately in provider metadata.
+            effective_area = area
             enthalpy = float(hydraulic.outlet_specific_enthalpy_J_kg)
             density = float(exit_state.density_kg_m3)
             steps.append({
@@ -514,11 +535,25 @@ class DynamicVaporizer:
                 depleted = True
                 break
 
-        termination_basis = "inventory_depletion" if depleted else "synthetic_diagnostic_horizon"
+        isolation_success = (
+            isolation_time is not None
+            and elapsed >= effective_horizon - 1.0e-12
+            and effective_horizon >= isolation_time
+            and valve.opening <= 1.0e-12
+        )
+        termination_basis = (
+            "inventory_depletion"
+            if depleted
+            else "reviewed_isolation_success"
+            if isolation_success
+            else "synthetic_diagnostic_horizon"
+        )
         termination_provenance = (
             "DynamicVaporizer finite-volume mass state reached the explicit positive inventory threshold"
             if depleted else
-            "DynamicVaporizer finite-volume state stopped at the caller-declared bounded horizon; residual inventory retained"
+            f"{type(self).__name__} native outlet closed at the caller-declared isolation time and remained closed through the observation delay"
+            if isolation_success else
+            f"{type(self).__name__} finite-volume state stopped at the caller-declared bounded horizon; residual inventory retained"
         )
         maximum_inventory_residual = 0.0
         maximum_pressure_residual = 0.0
@@ -577,6 +612,9 @@ class DynamicVaporizer:
                     "initial_mass_kg": initial_mass,
                     "final_mass_kg": float(state.mass_kg),
                     "residual_mass_kg": initial_mass - cumulative_mass - float(state.mass_kg),
+                    "isolation_time_s": isolation_time,
+                    "post_isolation_observation_s": post_isolation_delay,
+                    "isolation_success": isolation_success,
                     "dynamic_state_closure": closure,
                     "time_step_s": time_step,
                     "valve": {

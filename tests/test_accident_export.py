@@ -67,6 +67,32 @@ def test_accident_export_has_explicit_history_and_mass_closure(model):
     assert data["provider_meta"]["valve"]["choked_intervals"] > 0
 
 
+def test_dynamic_vaporizer_export_records_provider_owned_isolation_success():
+    model = DynamicVaporizer(
+        fluid_volume_m3=0.01,
+        wall_heat_capacity_J_K=10_000.0,
+        fluid_wall_UA_W_K=10.0,
+        ambient_temperature_K=300.0,
+        ambient_UA_W_K=5.0,
+        maximum_heat_W=1_000.0,
+    )
+    request = _request()
+    request.update({
+        "horizon_s": 0.1,
+        "time_step_s": 0.05,
+        "isolation_time_s": 0.05,
+        "post_isolation_observation_s": 0.05,
+    })
+    result = model.export_accident_history(request)
+    data = result["data"]
+    assert data["termination_basis"] == "reviewed_isolation_success"
+    assert data["provider_meta"]["isolation_success"] is True
+    assert data["provider_meta"]["isolation_time_s"] == pytest.approx(0.05)
+    assert data["provider_meta"]["post_isolation_observation_s"] == pytest.approx(0.05)
+    assert data["steps"][0]["mass_flow_kg_s"] > 0.0
+    assert data["steps"][1]["mass_flow_kg_s"] == pytest.approx(0.0)
+
+
 def test_accident_export_rejects_liquid_source(model):
     request = _request()
     request.update({"source_pressure_pa_abs": 2_000_000.0, "source_temperature_k": 30.0})
