@@ -24,6 +24,7 @@ from typing import Any, Iterable, Sequence
 
 from .properties import HydrogenProperties, ThermoState
 from .streams import MassEnergyFlow
+from .dynamic_state_closure import build_dynamic_state_closure
 
 
 @dataclass(frozen=True)
@@ -438,11 +439,29 @@ class DynamicVaporizer:
         )
         valve.set_target_opening(1.0)
         steps: list[dict[str, Any]] = []
+        state_history: list[dict[str, Any]] = []
         cumulative_mass = 0.0
         cumulative_enthalpy = 0.0
         elapsed = 0.0
         choked_count = 0
         depleted = False
+
+        def record_state(
+            time_s: float,
+            current_state: DynamicVaporizerState,
+            current_fluid: ThermoState,
+            cumulative_out_kg: float,
+        ) -> None:
+            state_history.append({
+                "time_s": float(time_s),
+                "mass_kg": float(current_state.mass_kg),
+                "internal_energy_j": float(current_state.internal_energy_J),
+                "wall_temperature_k": float(current_state.wall_temperature_K),
+                "pressure_pa_abs": float(current_fluid.pressure_Pa),
+                "cumulative_mass_out_kg": float(cumulative_out_kg),
+            })
+
+        record_state(0.0, state, self.thermo(state), 0.0)
         while elapsed < horizon - 1.0e-12:
             dt = min(time_step, horizon - elapsed)
             fluid = self.thermo(state)
@@ -490,6 +509,7 @@ class DynamicVaporizer:
             cumulative_enthalpy += mass_flow * dt * enthalpy
             state = result.state
             elapsed += dt
+            record_state(elapsed, state, self.thermo(state), cumulative_mass)
             if state.mass_kg <= max(initial_mass * 1.0e-9, 1.0e-12):
                 depleted = True
                 break
@@ -499,6 +519,41 @@ class DynamicVaporizer:
             "DynamicVaporizer finite-volume mass state reached the explicit positive inventory threshold"
             if depleted else
             "DynamicVaporizer finite-volume state stopped at the caller-declared bounded horizon; residual inventory retained"
+        )
+        maximum_inventory_residual = 0.0
+        maximum_pressure_residual = 0.0
+        for row in state_history:
+            reconstructed = self.thermo(
+                DynamicVaporizerState(
+                    mass_kg=float(row["mass_kg"]),
+                    internal_energy_J=float(row["internal_energy_j"]),
+                    wall_temperature_K=float(row["wall_temperature_k"]),
+                )
+            )
+            maximum_inventory_residual = max(
+                maximum_inventory_residual,
+                abs(
+                    initial_mass
+                    - float(row["cumulative_mass_out_kg"])
+                    - float(row["mass_kg"])
+                ),
+            )
+            maximum_pressure_residual = max(
+                maximum_pressure_residual,
+                abs(float(reconstructed.pressure_Pa) - float(row["pressure_pa_abs"])),
+            )
+        closure = build_dynamic_state_closure(
+            state_history,
+            max_abs_inventory_residual_kg=maximum_inventory_residual,
+            inventory_tolerance_kg=max(1.0e-10, initial_mass * 1.0e-9),
+            max_abs_pressure_residual_pa=maximum_pressure_residual,
+            pressure_tolerance_pa=max(1.0e-6, source_pressure * 1.0e-10),
+            provenance=(
+                "DynamicVaporizer recomputed pressure from its finite-volume mass, "
+                "internal-energy, and wall-temperature state before every native "
+                "outlet evaluation; the digest covers the initial and terminal "
+                "provider state history."
+            ),
         )
         return {
             "provider_export_schema": "prism.external_accident_history.v1",
@@ -522,6 +577,7 @@ class DynamicVaporizer:
                     "initial_mass_kg": initial_mass,
                     "final_mass_kg": float(state.mass_kg),
                     "residual_mass_kg": initial_mass - cumulative_mass - float(state.mass_kg),
+                    "dynamic_state_closure": closure,
                     "time_step_s": time_step,
                     "valve": {
                         "area_m2": area,

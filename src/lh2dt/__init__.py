@@ -33,6 +33,7 @@ from .ambient_vaporizer import *
 from .reliquefier import *
 from .dynamic_vaporizer import *
 from .dynamic_reliquefier import *
+from .dynamic_state_closure import *
 from .pump import *
 from .compressor import *
 from .vent_stack import *

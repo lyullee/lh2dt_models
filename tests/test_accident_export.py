@@ -59,6 +59,11 @@ def test_accident_export_has_explicit_history_and_mass_closure(model):
     assert any(step["mass_flow_kg_s"] > 0.0 for step in data["steps"])
     assert all("provider_source_state" in step for step in data["steps"])
     assert data["provider_meta"]["residual_mass_kg"] == pytest.approx(0.0, abs=1.0e-12)
+    closure = data["provider_meta"]["dynamic_state_closure"]
+    assert closure["schema_version"] == "prism.provider_dynamic_state_closure.v1"
+    assert closure["inventory_feedback_closed"] is True
+    assert closure["pressure_feedback_closed"] is True
+    assert len(closure["state_history_digest"]) == 64
     assert data["provider_meta"]["valve"]["choked_intervals"] > 0
 
 

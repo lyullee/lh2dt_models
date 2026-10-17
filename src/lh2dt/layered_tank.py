@@ -32,6 +32,7 @@ from .phase_change import (
     schrage_mass_flux,
 )
 from .streams import MassEnergyFlow
+from .dynamic_state_closure import build_dynamic_state_closure
 
 
 @dataclass(frozen=True)
@@ -2293,11 +2294,31 @@ class LayeredTank:
         initial_mass = self.total_mass_kg(initial)
         state = initial
         steps: list[dict[str, Any]] = []
+        state_history: list[dict[str, Any]] = []
         cumulative_mass = 0.0
         cumulative_enthalpy = 0.0
         elapsed = 0.0
         choked_count = 0
         maximum_mass_residual = 0.0
+
+        def record_state(time_s: float, current_state: LayeredTankState) -> None:
+            state_history.append({
+                "time_s": float(time_s),
+                "pressure_pa_abs": float(current_state.pressure_Pa),
+                "liquid_masses_kg": [float(value) for value in current_state.liquid_masses_kg],
+                "liquid_specific_enthalpies_j_kg": [
+                    float(value) for value in current_state.liquid_specific_enthalpies_J_kg
+                ],
+                "vapor_masses_kg": [float(value) for value in current_state.vapor_masses_kg],
+                "vapor_specific_enthalpies_j_kg": [
+                    float(value) for value in current_state.vapor_specific_enthalpies_J_kg
+                ],
+                "wall_temperatures_k": [float(value) for value in current_state.wall_temperatures_K],
+                "total_mass_kg": float(self.total_mass_kg(current_state)),
+                "total_energy_j": float(self.total_energy_J(current_state)),
+            })
+
+        record_state(0.0, state)
 
         while elapsed < effective_horizon - 1.0e-12:
             dt = min(time_step, effective_horizon - elapsed)
@@ -2387,6 +2408,7 @@ class LayeredTank:
             elapsed += dt
             residual = initial_mass - cumulative_mass - self.total_mass_kg(state)
             maximum_mass_residual = max(maximum_mass_residual, abs(residual))
+            record_state(elapsed, state)
             if self.total_mass_kg(state) <= max(initial_mass * 1.0e-9, 1.0e-12):
                 break
 
@@ -2416,6 +2438,37 @@ class LayeredTank:
             and step["ground_liquid_mass_flow_kg_s"] > 1.0e-12
             for step in steps
         ) else "liquid"
+        maximum_pressure_residual = 0.0
+        for row in state_history:
+            reconstructed = LayeredTankState(
+                pressure_Pa=float(row["pressure_pa_abs"]),
+                liquid_masses_kg=tuple(float(value) for value in row["liquid_masses_kg"]),
+                liquid_specific_enthalpies_J_kg=tuple(
+                    float(value) for value in row["liquid_specific_enthalpies_j_kg"]
+                ),
+                vapor_masses_kg=tuple(float(value) for value in row["vapor_masses_kg"]),
+                vapor_specific_enthalpies_J_kg=tuple(
+                    float(value) for value in row["vapor_specific_enthalpies_j_kg"]
+                ),
+                wall_temperatures_K=tuple(float(value) for value in row["wall_temperatures_k"]),
+            )
+            maximum_pressure_residual = max(
+                maximum_pressure_residual,
+                abs(float(self.thermo(reconstructed).pressure_Pa) - float(row["pressure_pa_abs"])),
+            )
+        closure = build_dynamic_state_closure(
+            state_history,
+            max_abs_inventory_residual_kg=maximum_mass_residual,
+            inventory_tolerance_kg=max(1.0e-10, initial_mass * 1.0e-9),
+            max_abs_pressure_residual_pa=maximum_pressure_residual,
+            pressure_tolerance_pa=max(1.0e-6, source_pressure * 1.0e-10),
+            provenance=(
+                "LayeredTank recomputed common pressure from its finite-volume cell "
+                "mass, enthalpy, and wall-temperature state during every native "
+                "outlet evaluation; the digest covers the initial and terminal "
+                "provider state history."
+            ),
+        )
         return {
             "provider_export_schema": "prism.external_accident_history.v1",
             "provider_model": f"{type(self).__module__}.{type(self).__qualname__}",
@@ -2451,6 +2504,7 @@ class LayeredTank:
                     "isolation_time_s": isolation_time,
                     "post_isolation_observation_s": post_isolation_delay,
                     "isolation_success": isolation_success,
+                    "dynamic_state_closure": closure,
                     "time_step_s": time_step,
                     "valve": {
                         "area_m2": area,

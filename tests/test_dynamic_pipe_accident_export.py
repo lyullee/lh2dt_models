@@ -43,6 +43,11 @@ def test_native_pipe_export_closes_gas_inventory():
     assert len(data["steps"]) == 2
     assert data["cumulative_mass_out_kg"] > 0.0
     assert data["provider_meta"]["residual_mass_kg"] == pytest.approx(0.0, abs=1.0e-12)
+    closure = data["provider_meta"]["dynamic_state_closure"]
+    assert closure["schema_version"] == "prism.provider_dynamic_state_closure.v1"
+    assert closure["inventory_feedback_closed"] is True
+    assert closure["pressure_feedback_closed"] is True
+    assert len(closure["state_history_digest"]) == 64
     assert all(step["mass_flow_kg_s"] >= 0.0 for step in data["steps"])
     assert all(step["provider_source_state"]["choked"] for step in data["steps"])
     assert all(
@@ -80,6 +85,7 @@ def test_native_pipe_export_resolves_explicit_two_phase_source():
     assert data["steps"][0]["ground_liquid_mass_flow_kg_s"] > 0.0
     assert data["steps"][0]["airborne_liquid_mass_flow_kg_s"] == 0.0
     assert data["provider_meta"]["residual_mass_kg"] == pytest.approx(0.0, abs=1.0e-12)
+    assert data["provider_meta"]["dynamic_state_closure"]["pressure_feedback_closed"] is True
 
 
 def test_native_pipe_export_rejects_opening_larger_than_pipe():

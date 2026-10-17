@@ -22,6 +22,7 @@ from typing import Any, Iterable
 from .pipe import HEMPipe
 from .properties import HydrogenProperties, ThermoState
 from .streams import MassEnergyFlow
+from .dynamic_state_closure import build_dynamic_state_closure
 
 
 @dataclass(frozen=True)
@@ -467,11 +468,24 @@ class DynamicHEMPipe:
         state = self.initialize(source, wall_temperature_K=wall_temperature)
         initial_mass = float(state.mass_kg)
         steps: list[dict[str, Any]] = []
+        state_history: list[dict[str, Any]] = []
         cumulative_mass = 0.0
         cumulative_enthalpy = 0.0
         elapsed = 0.0
         choked_count = 0
         pressure_equalized = False
+        maximum_inventory_residual = 0.0
+
+        def record_state(time_s: float, current_state: DynamicHEMPipeState, current_fluid: ThermoState) -> None:
+            state_history.append({
+                "time_s": float(time_s),
+                "mass_kg": float(current_state.mass_kg),
+                "internal_energy_j": float(current_state.internal_energy_J),
+                "wall_temperature_k": float(current_state.wall_temperature_K),
+                "pressure_pa_abs": float(current_fluid.pressure_Pa),
+            })
+
+        record_state(0.0, state, self.thermo(state))
 
         def derivative_at(
             candidate: DynamicHEMPipeState, opening: float
@@ -650,6 +664,14 @@ class DynamicHEMPipe:
             cumulative_enthalpy += mass_out * enthalpy
             state = next_state
             elapsed += dt
+            maximum_inventory_residual = max(
+                maximum_inventory_residual,
+                abs(initial_mass - cumulative_mass - float(state.mass_kg)),
+            )
+            # Re-evaluate after the optional pressure-equalisation event
+            # location; ``next_fluid`` may describe the pre-bisection RK4
+            # candidate rather than the accepted terminal state.
+            record_state(elapsed, state, self.thermo(state))
             if pressure_equalized:
                 break
             if state.mass_kg <= max(initial_mass * 1.0e-9, 1.0e-12):
@@ -680,6 +702,32 @@ class DynamicHEMPipe:
             "DynamicHEMPipe finite-volume state stopped at the caller-declared bounded horizon; residual inventory retained"
         )
         final_fluid = self.thermo(state)
+        maximum_pressure_residual = 0.0
+        for row in state_history:
+            reconstructed = self.thermo(
+                DynamicHEMPipeState(
+                    mass_kg=float(row["mass_kg"]),
+                    internal_energy_J=float(row["internal_energy_j"]),
+                    wall_temperature_K=float(row["wall_temperature_k"]),
+                )
+            )
+            maximum_pressure_residual = max(
+                maximum_pressure_residual,
+                abs(float(reconstructed.pressure_Pa) - float(row["pressure_pa_abs"])),
+            )
+        closure = build_dynamic_state_closure(
+            state_history,
+            max_abs_inventory_residual_kg=maximum_inventory_residual,
+            inventory_tolerance_kg=max(1.0e-10, initial_mass * 1.0e-9),
+            max_abs_pressure_residual_pa=maximum_pressure_residual,
+            pressure_tolerance_pa=max(1.0e-6, final_fluid.pressure_Pa * 1.0e-10),
+            provenance=(
+                "DynamicHEMPipe recomputed pressure from its finite-volume mass, "
+                "internal-energy, and wall-temperature state before every native "
+                "outlet evaluation; the digest covers the initial and terminal "
+                "provider state history."
+            ),
+        )
         return {
             "provider_export_schema": "prism.external_accident_history.v1",
             "provider_model": f"{type(self).__module__}.{type(self).__qualname__}",
@@ -718,6 +766,7 @@ class DynamicHEMPipe:
                     "isolation_time_s": isolation_time,
                     "post_isolation_observation_s": post_isolation_delay,
                     "isolation_success": isolation_success,
+                    "dynamic_state_closure": closure,
                     "time_step_s": time_step,
                     "valve": {
                         "area_m2": area,

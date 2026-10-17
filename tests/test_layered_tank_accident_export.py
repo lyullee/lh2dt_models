@@ -64,6 +64,11 @@ def test_native_export_closes_inventory_and_liquid_flash_partition():
     assert data["provider_meta"]["maximum_mass_balance_residual_kg"] == pytest.approx(
         0.0, abs=1.0e-10
     )
+    closure = data["provider_meta"]["dynamic_state_closure"]
+    assert closure["schema_version"] == "prism.provider_dynamic_state_closure.v1"
+    assert closure["inventory_feedback_closed"] is True
+    assert closure["pressure_feedback_closed"] is True
+    assert len(closure["state_history_digest"]) == 64
 
 
 def test_native_export_rejects_non_outward_initial_pressure():
