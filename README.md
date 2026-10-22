@@ -111,7 +111,7 @@ wall/vapor state and keeps the following 4–8 hours blind. `compare_forward_win
 then applies the existing `compare_series` metric only to that blind interval. Sorting,
 duplicate resolution, quality flags, event boundaries, and the capacity denominator are
 all explicit in the input and result objects. See
-[`docs/실측_비교_파이프라인.md`](docs/실측_비교_파이프라인.md).
+[measurement comparison pipeline (Korean)](docs/실측_비교_파이프라인.md).
 
 ## Private asset input provenance
 
@@ -119,7 +119,7 @@ Facility-specific tank dimensions, insulation paths, connected dead volumes, val
 and instrument mappings belong in a private JSON/YAML file. The `asset_inputs` helpers require
 `privacy: "private"`, disable plant-data optimisation, and audit every supplied parameter for a
 unit, source, uncertainty, and asset applicability. The public package contains no TK-1101/TK-1102
-telemetry or site configuration. See [`docs/비공개_설비_입력_스키마.md`](docs/비공개_설비_입력_스키마.md).
+telemetry or site configuration. See [private equipment input schema (Korean)](docs/비공개_설비_입력_스키마.md).
 
 ## Adaptive integration
 
@@ -692,13 +692,13 @@ and pass validated SI values through the documented interfaces.
 
 ### Korean
 
-- docs/모델_상세_및_물리방정식.md — 상세 모델과 물리방정식.
-- docs/인터페이스_상세_및_연결가이드.md — 인터페이스와 연결 가이드.
-- docs/모델_사용_및_인터페이스.md — 사용 절차와 예제.
-- docs/물리모델_구조와_방정식.md — 구조와 방정식 개요.
-- docs/유닛별_입출력_사양.md — 유닛별 입출력 사양.
-- docs/검증과_재현성.md — 검증과 재현성 절차.
-- docs/배포_및_인용_가이드.md — 배포·DOI·인용 가이드.
+- [Detailed models and physical equations](docs/모델_상세_및_물리방정식.md).
+- [Interface details and connection guide](docs/인터페이스_상세_및_연결가이드.md).
+- [Model usage, interfaces, and examples](docs/모델_사용_및_인터페이스.md).
+- [Physical-model architecture and equation overview](docs/물리모델_구조와_방정식.md).
+- [Unit-by-unit input/output specifications](docs/유닛별_입출력_사양.md).
+- [Verification and reproducibility procedures](docs/검증과_재현성.md).
+- [Distribution, DOI, and citation guide](docs/배포_및_인용_가이드.md).
 
 ## Development
 
